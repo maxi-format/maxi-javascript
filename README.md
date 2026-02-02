@@ -9,8 +9,9 @@ Version: `1.0.0-draft`
 
 ## Install
 
+Install from GitHub:
 ```bash
-npm install maxi-schema
+npm install maxi-format/maxi-javascript
 ```
 
 ## Quick start
