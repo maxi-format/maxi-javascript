@@ -1,0 +1,33 @@
+{
+  "name": "maxi-schema",
+  "version": "1.0.0-draft",
+  "description": "JavaScript library to parse and dump MAXI schema.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "maxi",
+    "schema",
+    "xml",
+    "parser",
+    "serializer",
+    "dump"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maxi-format/maxi-javascript.git"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch"
+  }
+}
