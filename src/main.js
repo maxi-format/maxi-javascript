@@ -1,11 +1,6 @@
-/**
- * MAXI JavaScript Library - Public API
- *
- * This is the stable public interface. All implementation details are in ./internal/
- */
-
 export { parseMaxi } from './api/parse.js';
 export { dumpMaxi } from './api/dump.js';
+export { streamMaxi, MaxiStreamResult } from './api/stream.js';
 export { MaxiError, MaxiErrorCode } from './core/errors.js';
 export {
   MaxiSchema,

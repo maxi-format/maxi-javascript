@@ -1,13 +1,13 @@
 /**
  * @typedef {Object} MaxiDumpOptions
- * @property {boolean} [multiline=false] Use multi-line formatting
- * @property {boolean} [includeTypes=true] Include type definitions in the output
- * @property {string} [version] MAXI version (e.g., '1.0.0')
- * @property {'strict'|'lax'} [mode] Parsing mode for directives
- * @property {string} [schemaFile] Path to an external schema file to import via `@schema`
- * @property {Map<string, MaxiDumpTypeInput> | MaxiDumpTypeInput[]} [types] Inline type definitions
- * @property {string} [defaultAlias] The type alias to use when `data` is a single object or an array of objects.
- * @property {boolean} [collectReferences=true] Promote nested typed objects with `id` into their own records
+ * @property {boolean} [multiline=false]
+ * @property {boolean} [includeTypes=true]
+ * @property {string} [version]
+ * @property {'strict'|'lax'} [mode]
+ * @property {string} [schemaFile]
+ * @property {Map<string, MaxiDumpTypeInput> | MaxiDumpTypeInput[]} [types]
+ * @property {string} [defaultAlias]
+ * @property {boolean} [collectReferences=true]
  */
 
 /**
@@ -29,40 +29,32 @@
 /**
  * @typedef {Object} MaxiDumpFromObjectsInput
  * @property {MaxiDumpSchemaInput} schema
- * @property {Record<string, Array<Record<string, any>>>} data Records grouped by type alias
+ * @property {Record<string, Array<Record<string, any>>>} data
  */
 
 /**
  * Serialize a JavaScript object, array, or map into a MAXI string.
  *
  * @param {Record<string, any> | Array<Record<string, any>> | Record<string, Array<Record<string, any>>> | import('../core/types.js').MaxiParseResult} data
- *   The data to serialize. Can be:
- *   - A single object (requires `options.defaultAlias`).
- *   - An array of objects (requires `options.defaultAlias`).
- *   - A map of `{ alias: [objects...] }`.
- *   - A previously parsed `MaxiParseResult` object for round-tripping.
  * @param {MaxiDumpOptions} [options]
  * @returns {string}
  */
 export function dumpMaxi(data, options = {}) {
-  // Heuristic dispatch for round-tripping a parse result
   if (data && 'records' in data && Array.isArray(data.records)) {
     return dumpMaxiFromParseResult(/** @type {import('../core/types.js').MaxiParseResult} */ (data), options);
   }
 
-  // Normalize various data inputs into the { alias: [objects...] } structure
   let dataMap = {};
   if (Array.isArray(data)) {
     if (!options.defaultAlias) throw new Error('dumpMaxi requires `options.defaultAlias` when dumping an array.');
     dataMap[options.defaultAlias] = data;
   } else if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
-    // If it doesn't look like a map of arrays, treat as a single object
     const firstValue = Object.values(data)[0];
     if (!Array.isArray(firstValue)) {
       if (!options.defaultAlias) throw new Error('dumpMaxi requires `options.defaultAlias` when dumping a single object.');
       dataMap[options.defaultAlias] = [data];
     } else {
-      dataMap = data; // Assumed to be a map of { alias: [objects...] }
+      dataMap = data;
     }
   }
 
@@ -89,7 +81,6 @@ function dumpMaxiFromParseResult(result, options) {
   const includeTypes = options.includeTypes ?? true;
   const out = [];
 
-  // Directives
   if (result?.schema?.version && result.schema.version !== '1.0.0') {
     out.push(`@version:${result.schema.version}`);
   }
@@ -100,7 +91,6 @@ function dumpMaxiFromParseResult(result, options) {
     out.push(`@schema:${imp}`);
   }
 
-  // Type definitions
   if (includeTypes && (result?.schema?.types?.size ?? 0) > 0) {
     if (out.length > 0) out.push('');
     for (const td of result.schema.types.values()) {
@@ -108,12 +98,10 @@ function dumpMaxiFromParseResult(result, options) {
     }
   }
 
-  // Schema/data separator
   if (out.length > 0) {
     out.push('###');
   }
 
-  // Data records
   for (const record of result?.records ?? []) {
     out.push(dumpRecord(record, multiline));
   }
@@ -134,41 +122,36 @@ function dumpMaxiFromObjects(input, options) {
   const schema = input.schema ?? {};
   const types = normalizeTypes(schema.types);
 
-  // Directives
+  resolveInheritanceForDump(types);
+
   if (schema.version && schema.version !== '1.0.0') out.push(`@version:${schema.version}`);
   if (schema.mode === 'strict') out.push(`@mode:strict`);
   for (const imp of schema.imports ?? []) out.push(`@schema:${imp}`);
 
-  // Type definitions
   if (includeTypes && types.size > 0) {
     if (out.length > 0) out.push('');
     for (const t of types.values()) out.push(dumpTypeInfo(t, multiline));
   }
 
-  // Schema/data separator
   if (out.length > 0) out.push('###');
 
-  // Data records (objects -> positional record)
-  const recordsToDump = new Map(); // alias -> array of objects
-  const seenObjects = new Set(); // To avoid processing the same object twice
+  const recordsToDump = new Map();
+  const seenObjects = new Set();
 
-  // Prime the pump with the initial data
   for (const [alias, rows] of Object.entries(input.data ?? {})) {
     if (!recordsToDump.has(alias)) recordsToDump.set(alias, []);
     recordsToDump.get(alias).push(...rows);
   }
 
-  // NEW: allow disabling reference collection (perf / simple dumps)
   const collectRefs = options.collectReferences ?? true;
   if (collectRefs) {
     collectReferencedObjectsIterative(types, recordsToDump, seenObjects);
   }
 
-  // Now dump all collected records
   for (const [alias, rows] of recordsToDump.entries()) {
     const t = types.get(alias);
     for (const obj of rows ?? []) {
-      out.push(dumpObjectAsRecord(alias, obj, t, types, multiline));
+      out.push(dumpObjectAsRecord(alias, obj, t, types, multiline, options));
     }
   }
 
@@ -176,9 +159,6 @@ function dumpMaxiFromObjects(input, options) {
 }
 
 /**
- * Iteratively traverses known typed objects and promotes nested typed objects with an `id` field
- * into their own top-level records.
- *
  * @param {Map<string, MaxiDumpTypeInput>} allTypes
  * @param {Map<string, Array<Record<string, any>>>} recordsToDump
  * @param {Set<any>} seenObjects
@@ -187,7 +167,6 @@ function collectReferencedObjectsIterative(allTypes, recordsToDump, seenObjects)
   /** @type {Array<{alias:string,obj:Record<string,any>}>} */
   const work = [];
 
-  // Seed worklist with all currently-known top-level records
   for (const [alias, rows] of recordsToDump.entries()) {
     for (const obj of rows ?? []) {
       if (obj && typeof obj === 'object' && !seenObjects.has(obj)) {
@@ -218,11 +197,9 @@ function collectReferencedObjectsIterative(allTypes, recordsToDump, seenObjects)
         if (!item || typeof item !== 'object') continue;
         if (seenObjects.has(item)) continue;
 
-        // Promote only if it has an id value
         if (item[idField.name] !== undefined) {
           if (!recordsToDump.has(nestedType.alias)) recordsToDump.set(nestedType.alias, []);
           recordsToDump.get(nestedType.alias).push(item);
-
           seenObjects.add(item);
           work.push({ alias: nestedType.alias, obj: item });
         }
@@ -244,6 +221,48 @@ function normalizeTypes(types) {
 }
 
 /**
+ * @param {Map<string, MaxiDumpTypeInput>} types
+ */
+function resolveInheritanceForDump(types) {
+  const resolved = new Set();
+
+  function resolve(alias) {
+    if (resolved.has(alias)) return;
+    const t = types.get(alias);
+    if (!t || !t.parents?.length) {
+      resolved.add(alias);
+      return;
+    }
+
+    const inheritedFields = [];
+    const ownFieldNames = new Set((t.fields ?? []).map(f => f.name));
+
+    for (const parentAlias of t.parents) {
+      resolve(parentAlias);
+      const parent = types.get(parentAlias);
+      if (parent) {
+        for (const pf of parent.fields ?? []) {
+          if (!ownFieldNames.has(pf.name)) {
+            inheritedFields.push({ ...pf });
+            ownFieldNames.add(pf.name);
+          }
+        }
+      }
+    }
+
+    if (inheritedFields.length > 0) {
+      t.fields = [...inheritedFields, ...(t.fields ?? [])];
+    }
+
+    resolved.add(alias);
+  }
+
+  for (const alias of types.keys()) {
+    resolve(alias);
+  }
+}
+
+/**
  * @param {MaxiDumpTypeInput} t
  * @param {boolean} multiline
  * @returns {string}
@@ -259,10 +278,6 @@ function dumpTypeInfo(t, multiline) {
 }
 
 /**
- * Dump plain object as MAXI record using schema field order.
- * Missing property => empty (so defaults/null semantics apply via parser).
- * null/undefined => explicit null '~' (override).
- *
  * @param {string} alias
  * @param {Record<string, any>} obj
  * @param {MaxiDumpTypeInput | undefined} t
@@ -270,26 +285,23 @@ function dumpTypeInfo(t, multiline) {
  * @param {boolean} multiline
  * @returns {string}
  */
-function dumpObjectAsRecord(alias, obj, t, allTypes, multiline) {
+function dumpObjectAsRecord(alias, obj, t, allTypes, multiline, options) {
   let vals = [];
   if (t) {
-    // Schema-driven: emit values in field order
     const fields = t.fields ?? [];
     vals = fields.map(f => {
-      if (!Object.prototype.hasOwnProperty.call(obj, f.name)) return ''; // omitted/empty
+      if (!Object.prototype.hasOwnProperty.call(obj, f.name)) return '';
       const v = obj[f.name];
       if (v === null || v === undefined) return '~';
-      return dumpValue(v, f, allTypes);
+      return dumpValue(v, f, allTypes, options);
     });
   } else {
-    // No schema: best-effort, emit values in object key order
     vals = Object.values(obj).map(v => {
       if (v === null || v === undefined) return '~';
-      return dumpValue(v, undefined, allTypes);
+      return dumpValue(v, undefined, allTypes, options);
     });
   }
 
-  // Trim trailing empty values as they are optional by spec
   let lastIndex = vals.length - 1;
   while (lastIndex >= 0 && vals[lastIndex] === '') {
     lastIndex--;
@@ -326,34 +338,38 @@ function dumpTypeDef(td, multiline) {
 function dumpField(field) {
   let result = field.name;
 
-  if (field.typeExpr) result += `:${field.typeExpr}`;
-  if (field.annotation) result += `@${field.annotation}`;
+  if (field.typeExpr && field.elementConstraints?.length > 0 && /\[\]/.test(field.typeExpr)) {
+    const lastBracket = field.typeExpr.lastIndexOf('[]');
+    const baseType = field.typeExpr.slice(0, lastBracket);
+    const suffix = field.typeExpr.slice(lastBracket);
 
-  // Dump constraints
-  if (field.constraints && field.constraints.length > 0) {
-    const constraintStrs = field.constraints.map(c => {
-      switch (c.type) {
-        case 'required': return '!';
-        case 'id': return 'id';
-        case 'comparison': return `${c.operator}${c.value}`;
-        case 'pattern': return `pattern:${c.value}`;
-        case 'mime':
-          if (Array.isArray(c.value) && c.value.length > 1) {
-            return `mime:[${c.value.join(',')}]`;
-          }
-          return `mime:${Array.isArray(c.value) ? c.value[0] : c.value}`;
-        case 'decimal-precision': return c.value;
-        case 'exact-length': return `=${c.value}`;
-        default: return '';
+    result += `:${baseType}`;
+
+    const elemStrs = field.elementConstraints.map(c => dumpConstraint(c)).filter(Boolean);
+    if (elemStrs.length > 0) result += `(${elemStrs.join(',')})`;
+
+    result += suffix;
+
+    if (field.constraints?.length > 0) {
+      const arrStrs = field.constraints.map(c => dumpConstraint(c)).filter(Boolean);
+      if (arrStrs.length > 0) result += `(${arrStrs.join(',')})`;
+    }
+  } else {
+    if (field.typeExpr) result += `:${field.typeExpr}`;
+    if (field.annotation) result += `@${field.annotation}`;
+
+    if (field.constraints && field.constraints.length > 0) {
+      const constraintStrs = field.constraints.map(c => dumpConstraint(c)).filter(Boolean);
+      if (constraintStrs.length > 0) {
+        result += `(${constraintStrs.join(',')})`;
       }
-    }).filter(Boolean);
-
-    if (constraintStrs.length > 0) {
-      result += `(${constraintStrs.join(',')})`;
     }
   }
 
-  // Dump default value
+  if (field.typeExpr && field.elementConstraints?.length > 0 && /\[\]/.test(field.typeExpr) && field.annotation) {
+    result += `@${field.annotation}`;
+  }
+
   if (field.defaultValue !== undefined) {
     const defStr = typeof field.defaultValue === 'string' && needsQuoting(field.defaultValue)
       ? `"${escapeString(field.defaultValue)}"`
@@ -365,12 +381,33 @@ function dumpField(field) {
 }
 
 /**
+ * @param {any} c
+ * @returns {string}
+ */
+function dumpConstraint(c) {
+  switch (c.type) {
+    case 'required': return '!';
+    case 'id': return 'id';
+    case 'comparison': return `${c.operator}${c.value}`;
+    case 'pattern': return `pattern:${c.value}`;
+    case 'mime':
+      if (Array.isArray(c.value) && c.value.length > 1) {
+        return `mime:[${c.value.join(',')}]`;
+      }
+      return `mime:${Array.isArray(c.value) ? c.value[0] : c.value}`;
+    case 'decimal-precision': return c.value;
+    case 'exact-length': return `=${c.value}`;
+    default: return '';
+  }
+}
+
+/**
  * @param {import('../core/types.js').MaxiRecord} record
  * @param {boolean} multiline
  * @returns {string}
  */
 function dumpRecord(record, multiline) {
-  const values = record.values.map(v => dumpValue(v, undefined, new Map()));
+  const values = record.values.map(v => dumpValue(v, undefined, new Map(), {}));
 
   if (!multiline) {
     return `${record.alias}(${values.join('|')})`;
@@ -386,15 +423,23 @@ function dumpRecord(record, multiline) {
  * @param {Map<string, MaxiDumpTypeInput>} allTypes
  * @returns {string}
  */
-function dumpValue(value, fieldInfo, allTypes) {
+function dumpValue(value, fieldInfo, allTypes, options) {
   if (value === null || value === undefined) return '~';
+
+  if (value instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))) {
+    const annotation = fieldInfo?.annotation;
+    if (annotation === 'hex') {
+      return Buffer.from(value).toString('hex');
+    }
+    return Buffer.from(value).toString('base64');
+  }
 
   if (typeof value === 'string') {
     return needsQuoting(value) ? `"${escapeString(value)}"` : value;
   }
 
   if (typeof value === 'boolean') {
-    return value ? 'true' : 'false';
+    return value ? '1' : '0';
   }
 
   if (typeof value === 'number') {
@@ -402,8 +447,6 @@ function dumpValue(value, fieldInfo, allTypes) {
   }
 
   if (Array.isArray(value)) {
-    // IMPORTANT: for typed arrays (e.g. "O[]"), each element should be treated as "O"
-    // Otherwise we resolve nestedType using "O[]" repeatedly and can recurse forever.
     const elemTypeExpr =
       typeof fieldInfo?.typeExpr === 'string' && /\[\]\s*$/.test(fieldInfo.typeExpr)
         ? fieldInfo.typeExpr.replace(/\[\]\s*$/, '')
@@ -413,7 +456,7 @@ function dumpValue(value, fieldInfo, allTypes) {
       ? { ...fieldInfo, typeExpr: elemTypeExpr }
       : fieldInfo;
 
-    return `[${value.map(v => dumpValue(v, elemFieldInfo, allTypes)).join(',')}]`;
+    return `[${value.map(v => dumpValue(v, elemFieldInfo, allTypes, options)).join(',')}]`;
   }
 
   if (typeof value === 'object') {
@@ -423,16 +466,40 @@ function dumpValue(value, fieldInfo, allTypes) {
     if (nestedType) {
       const idField = nestedType.fields.find(f => f.name === 'id');
       if (idField && value[idField.name] !== undefined) {
-        return dumpValue(value[idField.name], undefined, allTypes);
+        if (options?.collectReferences === false) {
+          return dumpInlineObject(value, nestedType, allTypes, options);
+        }
+        return dumpValue(value[idField.name], undefined, allTypes, options);
       }
-      return dumpObjectAsRecord('', value, nestedType, allTypes, false);
+      return dumpInlineObject(value, nestedType, allTypes, options);
     }
 
-    // Unknown object => map (do NOT attempt inline recursion)
-    return `{${Object.entries(value).map(([k, v]) => `${dumpMapKey(k)}:${dumpValue(v, undefined, allTypes)}`).join(',')}}`;
+    return `{${Object.entries(value).map(([k, v]) => `${dumpMapKey(k)}:${dumpValue(v, undefined, allTypes, options)}`).join(',')}}`;
   }
 
   return String(value);
+}
+
+/**
+ * @param {Record<string, any>} obj
+ * @param {MaxiDumpTypeInput} typeDef
+ * @param {Map<string, MaxiDumpTypeInput>} allTypes
+ * @param {any} options
+ * @returns {string}
+ */
+function dumpInlineObject(obj, typeDef, allTypes, options) {
+  const fields = typeDef.fields ?? [];
+  const vals = fields.map(f => {
+    if (!Object.prototype.hasOwnProperty.call(obj, f.name)) return '';
+    const v = obj[f.name];
+    if (v === null || v === undefined) return '~';
+    return dumpValue(v, f, allTypes, options);
+  });
+
+  let last = vals.length - 1;
+  while (last >= 0 && vals[last] === '') last--;
+
+  return `(${vals.slice(0, last + 1).join('|')})`;
 }
 
 /**

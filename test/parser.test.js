@@ -200,6 +200,183 @@ U(1|Julie)`;
   assert.deepEqual(res.records[0].values, [1, 'Julie']);
 });
 
+test('parse: imported schema inheritance resolves within the import file', async () => {
+  // products.mxs defines TS and P:Product<TS>
+  // users.mxs redefines TS with different fields
+  // P should use the TS from products.mxs (resolved within that file)
+  const input = `@schema:products.mxs
+@schema:users.mxs
+###
+P(1|Widget|2024-01-01)`;
+
+  const schemas = {
+    'products.mxs': `TS:Timestamped(created_at)
+P:Product<TS>(id:int|name)`,
+    'users.mxs': `TS:Timestamped(updated_at)
+U:User<TS>(id:int|email)`,
+  };
+
+  const loadSchema = async (path) => schemas[path];
+  const res = await parseMaxi(input, { loadSchema });
+
+  // P should have fields: created_at (from original TS), id, name
+  const pType = res.schema.getType('P');
+  assert.ok(pType);
+  assert.deepEqual(pType.fields.map(f => f.name), ['created_at', 'id', 'name']);
+
+  // U should have fields: updated_at (from overridden TS), id, email
+  const uType = res.schema.getType('U');
+  assert.ok(uType);
+  assert.deepEqual(uType.fields.map(f => f.name), ['updated_at', 'id', 'email']);
+});
+
+test('parse: cross-file type override is allowed (last wins)', async () => {
+  const input = `@schema:base.mxs
+U:User(id:int|name|role=admin)
+###
+U(1|Julie)`;
+
+  const loadSchema = async (path) => {
+    return `U:User(id:int|name)`;
+  };
+
+  const res = await parseMaxi(input, { loadSchema });
+
+  // Local definition should override imported one
+  const uType = res.schema.getType('U');
+  assert.equal(uType.fields.length, 3); // id, name, role
+  assert.equal(uType.fields[2].name, 'role');
+});
+
+test('parse: same-file duplicate still errors', async () => {
+  const input = `U:User(id:int|name)
+U:User2(id:int|email)
+###`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.DuplicateTypeError
+  );
+});
+
+test('parse: cross-file duplicate in imported file also errors within that file', async () => {
+  const input = `@schema:bad.mxs
+###`;
+
+  const loadSchema = async (path) => {
+    // Same alias defined twice within the same .mxs file
+    return `U:User(id:int|name)
+U:User2(id:int|email)`;
+  };
+
+  await assert.rejects(
+    () => parseMaxi(input, { loadSchema }),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.DuplicateTypeError
+  );
+});
+
+test('parse: float fields accept scientific notation', async () => {
+  const input = `M:Measurement(id:int|value:float)
+###
+M(1|1.0e10)
+M(2|-2.5E-3)
+M(3|6.022e23)
+M(4|42)
+M(5|3.14)`;
+
+  const res = await parseMaxi(input);
+
+  assert.equal(res.records[0].values[1], 1.0e10);
+  assert.equal(res.records[1].values[1], -2.5e-3);
+  assert.equal(res.records[2].values[1], 6.022e23);
+  assert.equal(res.records[3].values[1], 42);
+  assert.equal(res.records[4].values[1], 3.14);
+});
+
+// --- §1.3 Type mismatch in strict mode ---
+
+test('parse: strict mode rejects non-numeric string for int field -> E007', async () => {
+  const input = `@mode:strict
+U:User(id:int|name)
+###
+U(hello|Julie)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.TypeMismatchError
+  );
+});
+
+test('parse: strict mode rejects non-numeric string for float field -> E007', async () => {
+  const input = `@mode:strict
+M:Measurement(id:int|value:float)
+###
+M(1|not-a-float)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.TypeMismatchError
+  );
+});
+
+test('parse: strict mode rejects non-numeric string for decimal field -> E007', async () => {
+  const input = `@mode:strict
+P:Product(id:int|price:decimal)
+###
+P(1|expensive)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.TypeMismatchError
+  );
+});
+
+test('parse: strict mode rejects invalid bool value -> E007', async () => {
+  const input = `@mode:strict
+U:User(id:int|active:bool)
+###
+U(1|maybe)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.TypeMismatchError
+  );
+});
+
+test('parse: strict mode accepts valid typed values', async () => {
+  const input = `@mode:strict
+U:User(id:int|score:float|price:decimal|active:bool)
+###
+U(1|1.5e2|9.99|true)`;
+
+  const res = await parseMaxi(input);
+  assert.deepEqual(res.records[0].values, [1, 150, 9.99, true]);
+});
+
+// --- §1.4 Type coercion warnings in lax mode ---
+
+test('parse: lax mode warns on non-numeric value for int field', async () => {
+  const input = `U:User(id:int|name)
+###
+U(hello|Julie)`;
+
+  const res = await parseMaxi(input);
+  // Value should be returned as-is (string), with a warning
+  assert.equal(res.records[0].values[0], 'hello');
+  assert.ok(res.warnings.some(w => w.code === MaxiErrorCode.TypeMismatchError));
+});
+
+test('parse: lax mode warns on decimal value for int field (coercion with loss)', async () => {
+  const input = `U:User(id:int|age:int)
+###
+U(1|25.7)`;
+
+  const res = await parseMaxi(input);
+  // Should coerce to 25 with a warning about fractional loss
+  assert.equal(res.records[0].values[1], 25);
+  assert.ok(res.warnings.some(w => w.message.includes('coerced to int')));
+});
+
 test('testdata: run all fixtures in ../testdata/*', async () => {
   const fs = await import('node:fs/promises');
   const path = await import('node:path');
@@ -465,3 +642,150 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
   }
 });
 
+test('parse: unmatched opening bracket throws ArraySyntaxError E015', async () => {
+  const input = `T:Thing(id:int|tags:str[])
+###
+T(1|[a,b,c)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => {
+      assert.ok(err instanceof MaxiError);
+      assert.equal(err.code, MaxiErrorCode.ArraySyntaxError);
+      return true;
+    }
+  );
+});
+
+test('parse: invalid default value for int field throws E018', async () => {
+  const input = `T:Thing(id:int|age:int=hello)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => {
+      assert.ok(err instanceof MaxiError);
+      assert.equal(err.code, MaxiErrorCode.InvalidDefaultValueError);
+      assert.ok(err.message.includes('hello'));
+      return true;
+    }
+  );
+});
+
+test('parse: invalid default value for bool field throws E018', async () => {
+  const input = `T:Thing(id:int|active:bool=maybe)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => {
+      assert.ok(err instanceof MaxiError);
+      assert.equal(err.code, MaxiErrorCode.InvalidDefaultValueError);
+      return true;
+    }
+  );
+});
+
+test('parse: invalid default value for float field throws E018', async () => {
+  const input = `T:Thing(id:int|score:float=abc)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => {
+      assert.ok(err instanceof MaxiError);
+      assert.equal(err.code, MaxiErrorCode.InvalidDefaultValueError);
+      return true;
+    }
+  );
+});
+
+test('parse: valid default values do not throw', async () => {
+  const input = `T:Thing(id:int|age:int=25|active:bool=1|score:float=3.14|name=default)`;
+  const res = await parseMaxi(input);
+  assert.ok(res.schema.hasType('T'));
+});
+
+test('parse: field referencing unknown type throws UnknownTypeError E003', async () => {
+  const input = `T:Thing(id:int|owner:NonExistent)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => {
+      assert.ok(err instanceof MaxiError);
+      assert.equal(err.code, MaxiErrorCode.UnknownTypeError);
+      assert.ok(err.message.includes('NonExistent'));
+      return true;
+    }
+  );
+});
+
+test('parse: field referencing known type by name does not throw', async () => {
+  const input = `U:User(id:int|name)
+O:Order(id:int|user:User)`;
+
+  const res = await parseMaxi(input);
+  assert.ok(res.schema.hasType('O'));
+});
+
+test('parse: array of unknown type throws E003', async () => {
+  const input = `T:Thing(id:int|items:Unknown[])`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => {
+      assert.ok(err instanceof MaxiError);
+      assert.equal(err.code, MaxiErrorCode.UnknownTypeError);
+      assert.ok(err.message.includes('Unknown'));
+      return true;
+    }
+  );
+});
+
+test('parse: map<int> shorthand resolves value type as int', async () => {
+  const input = `S:Scores(id:int|data:map<int>)
+###
+S(1|{math:95,english:87})`;
+
+  const res = await parseMaxi(input);
+  const field = res.schema.getType('S').fields[1];
+  assert.equal(field.typeExpr, 'map<int>');
+  assert.deepEqual(res.records[0].values[1], { math: 95, english: 87 });
+});
+
+test('parse: circular imports are handled without infinite loop', async () => {
+  const input = `@schema:a.mxs
+###
+U(1|Julie)`;
+
+  const schemas = {
+    'a.mxs': `@schema:b.mxs\nU:User(id:int|name)`,
+    'b.mxs': `@schema:a.mxs\nO:Order(id:int|total:decimal)`,
+  };
+
+  const loadSchema = async (path) => schemas[path];
+  const res = await parseMaxi(input, { loadSchema });
+
+  assert.ok(res.schema.hasType('U'));
+  assert.ok(res.schema.hasType('O'));
+  assert.equal(res.records[0].values, res.records[0].values); // just confirm it resolves
+});
+
+test('parse: explicit null on required field warns in lax mode', async () => {
+  const input = `U:User(id:int|name(!))
+###
+U(1|~)`;
+
+  const res = await parseMaxi(input);
+  assert.equal(res.records[0].values[1], null);
+  assert.ok(res.warnings.some(w => w.code === MaxiErrorCode.MissingRequiredFieldError));
+});
+
+test('parse: explicit null on required field throws in strict mode', async () => {
+  const input = `@mode:strict
+U:User(id:int|name(!))
+###
+U(1|~)`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.MissingRequiredFieldError
+  );
+});

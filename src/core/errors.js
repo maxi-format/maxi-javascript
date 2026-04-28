@@ -22,10 +22,6 @@ export const MaxiErrorCode = Object.freeze({
   SchemaLoadError: 'E020',
 });
 
-/**
- * MAXI error with line/column tracking.
- * @extends {Error}
- */
 export class MaxiError extends Error {
   /**
    * @param {string} message
@@ -42,14 +38,9 @@ export class MaxiError extends Error {
     if (meta.cause !== undefined) this.cause = meta.cause;
   }
 
-  /**
-   * Format error with location info for display.
-   * @returns {string}
-   */
   toString() {
     const loc = this.line ? ` at line ${this.line}${this.column ? `, column ${this.column}` : ''}` : '';
     const file = this.filename ? ` in ${this.filename}` : '';
     return `${this.name} [${this.code}]${file}${loc}: ${this.message}`;
   }
 }
-

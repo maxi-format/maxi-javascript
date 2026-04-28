@@ -3,6 +3,7 @@
 JavaScript library for parsing and dumping **MAXI schema + records**.
 
 - `parseMaxi(input, options)` → parses MAXI text into a structured result (schema + records)
+- `streamMaxi(input, options)` → parses schema immediately and returns an async iterator for records
 - `dumpMaxi(data, options)` → serializes objects/records back into MAXI text
 
 Version: `1.0.0-draft`
@@ -16,10 +17,10 @@ npm install maxi-format/maxi-javascript
 
 ## Quick start
 
-### Parse
+### Parse (in-memory)
 
 ```js
-const { parseMaxi } = require("maxi-schema");
+import { parseMaxi } from "maxi-schema";
 
 (async () => {
   const input = `
@@ -34,12 +35,39 @@ U(1|Julie|julie@maxi.org)
 })();
 ```
 
+### Parse (streaming)
+
+For large files, `streamMaxi` parses the schema immediately and returns an async iterator that yields records one at a time.
+
+```js
+import { streamMaxi } from "maxi-schema";
+
+(async () => {
+  const input = `
+U:User(id:int|name|email)
+###
+U(1|Julie|julie@maxi.org)
+U(2|Matt|matt@maxi.org)
+`.trim();
+
+  const stream = await streamMaxi(input);
+
+  // Schema is available immediately
+  console.log(stream.schema.getType('U').fields.map(f => f.name));
+
+  // Iterate over records as they are parsed
+  for await (const record of stream) {
+    console.log(record.values);
+  }
+})();
+```
+
 ### Dump
 
 Dump a single object/array by providing `defaultAlias`, or dump a map of `{ alias: [objects...] }`.
 
 ```js
-const { dumpMaxi } = require("maxi-schema");
+import { dumpMaxi } from "maxi-schema";
 
 const maxi = dumpMaxi(
   [{ id: 1, name: "Julie" }, { id: 2, name: "Matt", email: null }],
@@ -68,16 +96,28 @@ console.log(maxi);
 
 - `input: string` MAXI content
 - `options.mode: "lax" | "strict"` (default: `"lax"`)
-  - `lax`: unknown types become warnings
-  - `strict`: unknown types are errors
+  - `lax`: best-effort parsing, accumulates warnings for recoverable errors
+  - `strict`: fails on any deviation from the schema
 - `options.filename?: string` used in error messages
 - `options.loadSchema?: (pathOrUrl: string) => string | Promise<string>`
   - used to resolve `@schema:...` imports
 
-Returns a parse result containing:
+Returns a `MaxiParseResult` containing:
 - `schema` (types, directives/imports)
 - `records` (array of `{ alias, values }`)
-- `warnings` (only relevant in lax mode)
+- `warnings` (array of errors encountered in lax mode)
+
+### `streamMaxi(input, options?)`
+
+Parses MAXI content in a streaming fashion. It returns a `Promise` that resolves to a `MaxiStreamResult`.
+
+- `input` and `options` are the same as `parseMaxi`.
+
+The resolved `MaxiStreamResult` object has:
+- `schema`: The fully parsed schema, available immediately.
+- `warnings`: An array for storing warnings.
+- `records()`: An async generator method that yields records one by one.
+- The result object is also an async-iterable, so you can use `for await...of` directly on it.
 
 ### `dumpMaxi(data, options?)`
 

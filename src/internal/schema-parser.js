@@ -1,13 +1,13 @@
 import { MaxiError, MaxiErrorCode } from '../core/errors.js';
 import { MaxiTypeDef, MaxiFieldDef } from '../core/types.js';
+import { validateSchemaConstraints } from './constraint-validator.js';
 
 /**
  * Schema phase parser (directives + types + imports).
- * Operates on raw schema text, tokenizes internally.
  */
 export class SchemaParser {
   /**
-   * @param {string} schemaText Raw schema section text
+   * @param {string} schemaText
    * @param {import('../core/types.js').MaxiParseResult} result
    * @param {import('../api/parse.js').MaxiParseOptions} options
    */
@@ -15,18 +15,14 @@ export class SchemaParser {
     this.schemaText = schemaText;
     this.result = result;
     this.options = options;
-    /** @type {Set<string>} Track files being loaded to prevent circular imports */
+    /** @type {Set<string>} */
     this.loadingStack = new Set();
+    /** @type {Set<string>} */
+    this.localAliases = new Set();
   }
 
-  /**
-   * Parse schema section.
-   */
   async parse() {
-    // Skip if empty schema
-    if (!this.schemaText.trim()) {
-      return;
-    }
+    if (!this.schemaText.trim()) return;
 
     const lines = this.schemaText.split(/\r?\n/);
     let lineNumber = 1;
@@ -34,18 +30,13 @@ export class SchemaParser {
     for (let i = 0; i < lines.length; i++, lineNumber++) {
       const line = lines[i].trim();
 
-      // Skip empty lines and comments
-      if (!line || line.startsWith('#')) {
-        continue;
-      }
+      if (!line || line.startsWith('#')) continue;
 
-      // Parse directives
       if (line.startsWith('@')) {
         await this.parseDirective(line, lineNumber);
         continue;
       }
 
-      // Parse type definition (may span multiple lines)
       const typeDefResult = this.parseTypeDefinition(lines, i, lineNumber);
       if (typeDefResult) {
         i = typeDefResult.nextIndex;
@@ -53,15 +44,17 @@ export class SchemaParser {
       }
     }
 
-    // After all schemas loaded, resolve inheritance
     this.resolveInheritance();
-
-    // Build name->alias lookup for later phases (records parsing / tests / dumping).
+    validateSchemaConstraints(this.result.schema, this.options.filename);
+    this.validateDefaultValues();
     this.buildNameIndex();
+
+    if (!this._isImported) {
+      this.validateFieldTypeReferences();
+    }
   }
 
   buildNameIndex() {
-    // Non-enumerable to avoid surprising JSON output if users stringify schema.
     const nameToAlias = new Map();
     for (const [alias, td] of this.result.schema.types.entries()) {
       const name = td.name;
@@ -75,7 +68,6 @@ export class SchemaParser {
       writable: true,
     });
 
-    // Convenience resolver used by other components
     Object.defineProperty(this.result.schema, 'resolveTypeAlias', {
       value: (maybeAliasOrName) => {
         if (!maybeAliasOrName) return null;
@@ -121,7 +113,6 @@ export class SchemaParser {
         break;
 
       default:
-        // Unknown directive - warn but don't fail
         this.result.addWarning(
           `Unknown directive '@${directiveName}' ignored`,
           { code: MaxiErrorCode.UnknownDirectiveError, line: lineNumber }
@@ -129,14 +120,8 @@ export class SchemaParser {
     }
   }
 
-  /**
-   * Parse @version directive.
-   * @param {string} value
-   * @param {number} lineNumber
-   * @private
-   */
+  /** @private */
   parseVersionDirective(value, lineNumber) {
-    // Basic semver validation
     if (!/^\d+\.\d+\.\d+$/.test(value)) {
       throw new MaxiError(
         `Invalid version format: ${value}`,
@@ -145,7 +130,6 @@ export class SchemaParser {
       );
     }
 
-    // Check if we support this version (currently only 1.0.0)
     if (value !== '1.0.0') {
       throw new MaxiError(
         `Unsupported version: ${value}. Parser supports v1.0.0`,
@@ -157,12 +141,7 @@ export class SchemaParser {
     this.result.schema.version = value;
   }
 
-  /**
-   * Parse @mode directive.
-   * @param {string} value
-   * @param {number} lineNumber
-   * @private
-   */
+  /** @private */
   parseModeDirective(value, lineNumber) {
     if (value !== 'strict' && value !== 'lax') {
       throw new MaxiError(
@@ -171,27 +150,14 @@ export class SchemaParser {
         { line: lineNumber, filename: this.options.filename }
       );
     }
-
     this.result.schema.mode = value;
   }
 
-  /**
-   * Parse @schema directive and load external schema.
-   * @param {string} pathOrUrl
-   * @param {number} lineNumber
-   * @private
-   */
+  /** @private */
   async parseSchemaDirective(pathOrUrl, lineNumber) {
-    // Check for circular imports
-    if (this.loadingStack.has(pathOrUrl)) {
-      // Circular import detected - this is allowed, just skip
-      return;
-    }
+    if (this.loadingStack.has(pathOrUrl)) return;
 
-    // Add to imports list
     this.result.schema.imports.push(pathOrUrl);
-
-    // Load external schema
     await this.loadExternalSchema(pathOrUrl, lineNumber);
   }
 
@@ -206,27 +172,16 @@ export class SchemaParser {
   parseTypeDefinition(lines, startIndex, startLine) {
     const firstLine = lines[startIndex];
 
-    // Reject obvious non-type-def lines early.
     const trimmed = firstLine.trim();
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('@')) return null;
 
-    // A schema type definition MUST have an opening '(' that starts the field list,
-    // but records also have '(' so we additionally require either:
-    // - explicit type name (Alias:TypeName...) OR
-    // - inheritance marker before '(' (Alias<...>(...)) OR
-    // - alias-only definition without ":" but NO digit immediately after '(' in the first line
-    //
-    // This avoids treating data records like U(1|...) as schema definitions.
     const looksLikeAliasParen = /^[A-Za-z_][A-Za-z0-9_-]*\s*\(/.test(trimmed);
     const looksLikeExplicitType = /^[A-Za-z_][A-Za-z0-9_-]*\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s*(<[^>]+>)?\s*\(/.test(trimmed);
     const looksLikeInheritance = /^[A-Za-z_][A-Za-z0-9_-]*\s*<[^>]+>\s*\(/.test(trimmed);
 
     if (!looksLikeExplicitType && !looksLikeInheritance && looksLikeAliasParen) {
-      // alias-only schema form "U(...)" exists, but record form is more common.
-      // Heuristic: if after '(' we see a digit, '-' digit, or '~' likely it's a record.
       const afterParen = trimmed.slice(trimmed.indexOf('(') + 1).trimStart();
       if (/^(\d|-\d|~)/.test(afterParen)) return null;
-      // Otherwise allow alias-only typedef (e.g., U(id|name|email))
     } else if (!looksLikeExplicitType && !looksLikeInheritance) {
       return null;
     }
@@ -352,13 +307,6 @@ export class SchemaParser {
     const header = trimmed.slice(0, openIdx).trim();
     const fieldsStr = trimmed.slice(openIdx + 1, closeIdx).trim();
 
-    // Header grammar (schema):
-    //   Alias [ ":" TypeName ] [ "<" Parents ">" ]
-    // Examples:
-    //   U
-    //   U:User
-    //   U:User<P>
-    //   U<P>
     const headerMatch = header.match(
       /^([A-Za-z_][A-Za-z0-9_-]*)(?::([A-Za-z][A-Za-z0-9_-]*))?(?:<\s*([^>]+?)\s*>)?\s*$/
     );
@@ -372,13 +320,14 @@ export class SchemaParser {
 
     const [, alias, typeName, parentsStr] = headerMatch;
 
-    if (this.result.schema.hasType(alias)) {
+    if (this.localAliases.has(alias)) {
       throw new MaxiError(
         `Duplicate type alias '${alias}'`,
         MaxiErrorCode.DuplicateTypeError,
         { line: lineNumber, filename: this.options.filename }
       );
     }
+    this.localAliases.add(alias);
 
     const parents = parentsStr
       ? parentsStr.split(',').map(p => p.trim()).filter(Boolean)
@@ -394,13 +343,7 @@ export class SchemaParser {
     this.result.schema.addType(typeDef);
   }
 
-  /**
-   * Find the index of the matching ')' for the '(' at openIdx.
-   * @param {string} s
-   * @param {number} openIdx
-   * @returns {number} index of matching ')', or -1
-   * @private
-   */
+  /** @private */
   findMatchingParen(s, openIdx) {
     if (openIdx < 0 || s[openIdx] !== '(') return -1;
 
@@ -442,18 +385,10 @@ export class SchemaParser {
     return -1;
   }
 
-  /**
-   * Parse field list from type definition.
-   * @param {string} fieldsStr Field list string
-   * @param {number} lineNumber
-   * @returns {MaxiFieldDef[]}
-   * @private
-   */
+  /** @private */
   parseFieldList(fieldsStr, lineNumber) {
     const fields = [];
 
-    // Normalize newlines/tabs/indentation inside (...) so per-field parsing is deterministic.
-    // This also prevents leading indentation from being treated as part of symbols.
     const normalized = fieldsStr
       .replace(/\r?\n/g, ' ')
       .replace(/\t/g, ' ')
@@ -535,21 +470,13 @@ export class SchemaParser {
     return out;
   }
 
-  /**
-   * Parse a single field definition.
-   * @param {string} fieldStr Field definition string
-   * @param {number} lineNumber
-   * @returns {MaxiFieldDef}
-   * @private
-   */
+  /** @private */
   parseField(fieldStr, lineNumber) {
-    // name[:type[@annotation]][(constraints)][=default]
-
     let remainingStr = fieldStr.trim();
     let constraints = [];
+    let elementConstraints = [];
     let defaultValue;
 
-    // 1) Split name vs rest first (so constraints can be on either side)
     const colonIdx0 = this.findTopLevelChar(remainingStr, ':');
     let namePart = remainingStr;
     let restPart = '';
@@ -559,12 +486,20 @@ export class SchemaParser {
       restPart = remainingStr.slice(colonIdx0 + 1).trim();
     }
 
-    // 2) Extract trailing constraints FIRST (before defaults), because >= and <= contain '='
     if (restPart) {
       const trailing = this.extractTrailingGroup(restPart, '(', ')');
       if (trailing) {
         constraints = this.parseConstraints(trailing.inner, lineNumber);
         restPart = trailing.before.trim();
+
+        if (/\[\]\s*$/.test(restPart)) {
+          const withoutBrackets = restPart.replace(/\[\]\s*$/, '').trim();
+          const innerTrailing = this.extractTrailingGroup(withoutBrackets, '(', ')');
+          if (innerTrailing) {
+            elementConstraints = this.parseConstraints(innerTrailing.inner, lineNumber);
+            restPart = innerTrailing.before.trim() + '[]';
+          }
+        }
       }
     }
 
@@ -576,8 +511,6 @@ export class SchemaParser {
       }
     }
 
-    // 3) Extract default value using TOP-LEVEL '=' (must not be inside (),[],{}, or strings)
-    //    This avoids mis-parsing the '=' in >= / <= comparisons.
     const eqIdxName = this.findTopLevelChar(namePart, '=');
     if (eqIdxName !== -1) {
       defaultValue = namePart.slice(eqIdxName + 1).trim();
@@ -596,7 +529,7 @@ export class SchemaParser {
       }
     }
 
-    // 4) Parse typeExpr + annotation from restPart (after constraints/default removed)
+    // 4) Parse typeExpr + annotation from restPart
     let typeExpr = null;
     let annotation = null;
 
@@ -615,17 +548,12 @@ export class SchemaParser {
       typeExpr,
       annotation,
       constraints,
+      elementConstraints: elementConstraints.length > 0 ? elementConstraints : null,
       defaultValue,
     });
   }
 
-  /**
-   * Find first occurrence of a character at top-level (not in strings or (),[],{}).
-   * @param {string} s
-   * @param {string} ch
-   * @returns {number}
-   * @private
-   */
+  /** @private */
   findTopLevelChar(s, ch) {
     let inString = false;
     let escapeNext = false;
@@ -677,56 +605,28 @@ export class SchemaParser {
    */
   extractTrailingGroup(s, openCh, closeCh) {
     const trimmed = s.trimEnd();
-
-    // The closing delimiter MUST be the last non-whitespace character
     if (!trimmed.endsWith(closeCh)) return null;
 
     const closeIdx = trimmed.lastIndexOf(closeCh);
     if (closeIdx === -1) return null;
 
-    // Scan backwards from closeIdx-1 to find matching openCh.
     let inString = false;
-    let depth = 1; // Start at 1 because we already found the closing paren
+    let depth = 1;
     let startIdx = -1;
 
     for (let i = closeIdx - 1; i >= 0; i--) {
       const ch = trimmed[i];
-
-      // Skip string handling for simplicity (constraints don't contain strings)
-      if (ch === '"') {
-        // Toggle string state
-        inString = !inString;
-        continue;
-      }
-
+      if (ch === '"') { inString = !inString; continue; }
       if (inString) continue;
-
-      if (ch === closeCh) {
-        depth++;
-      } else if (ch === openCh) {
-        depth--;
-        if (depth === 0) {
-          startIdx = i;
-          break;
-        }
-      }
+      if (ch === closeCh) depth++;
+      else if (ch === openCh) { depth--; if (depth === 0) { startIdx = i; break; } }
     }
 
     if (startIdx === -1 || depth !== 0) return null;
-
-    const before = trimmed.slice(0, startIdx);
-    const inner = trimmed.slice(startIdx + 1, closeIdx);
-
-    return { before, inner };
+    return { before: trimmed.slice(0, startIdx), inner: trimmed.slice(startIdx + 1, closeIdx) };
   }
 
-  /**
-   * Parse constraint string into structured constraints.
-   * @param {string} constraintStr
-   * @param {number} lineNumber
-   * @returns {import('../core/types.js').ParsedConstraint[]}
-   * @private
-   */
+  /** @private */
   parseConstraints(constraintStr, lineNumber) {
     const constraints = [];
 
@@ -735,24 +635,12 @@ export class SchemaParser {
       .filter(Boolean);
 
     for (const trimmed of parts) {
-      if (trimmed === '!') {
-        constraints.push({ type: 'required' });
-        continue;
-      }
+      if (trimmed === '!') { constraints.push({ type: 'required' }); continue; }
+      if (trimmed === 'id') { constraints.push({ type: 'id' }); continue; }
 
-      if (trimmed === 'id') {
-        constraints.push({ type: 'id' });
-        continue;
-      }
-
-      // Exact length constraint: =N (for arrays/maps)
-      // MUST be checked before generic comparison, otherwise "=3" becomes a comparison.
       const exactLengthMatch = trimmed.match(/^=(\d+)$/);
       if (exactLengthMatch) {
-        constraints.push({
-          type: 'exact-length',
-          value: parseInt(exactLengthMatch[1], 10)
-        });
+        constraints.push({ type: 'exact-length', value: parseInt(exactLengthMatch[1], 10) });
         continue;
       }
 
@@ -793,7 +681,7 @@ export class SchemaParser {
 
       const precisionMatch = trimmed.match(/^(\d+:)?(\d+)?\.(\d+(?::\d+)?)?$/);
       if (precisionMatch) {
-        constraints.push({ type: 'decimal-precision', value: trimmed });
+        constraints.push(this.parseDecimalPrecision(trimmed));
         continue;
       }
 
@@ -945,6 +833,53 @@ export class SchemaParser {
   }
 
   /**
+   * Parse decimal precision constraint into structured form.
+   * Forms: 5.2, 0:10.2, .2:4, 1:999., 0:100.0:2, .2, N.
+   * @param {string} raw
+   * @returns {import('../core/types.js').ParsedConstraint}
+   * @private
+   */
+  parseDecimalPrecision(raw) {
+    // Split on '.'
+    const dotIdx = raw.indexOf('.');
+    const intPart = raw.slice(0, dotIdx);     // e.g. "0:10", "5", ""
+    const fracPart = raw.slice(dotIdx + 1);   // e.g. "2", "2:4", ""
+
+    let intMin = null, intMax = null, fracMin = null, fracMax = null;
+
+    if (intPart) {
+      if (intPart.includes(':')) {
+        const [a, b] = intPart.split(':');
+        intMin = a !== '' ? parseInt(a, 10) : null;
+        intMax = b !== '' ? parseInt(b, 10) : null;
+      } else {
+        // Single number = exact (both min and max)
+        intMax = parseInt(intPart, 10);
+      }
+    }
+
+    if (fracPart) {
+      if (fracPart.includes(':')) {
+        const [a, b] = fracPart.split(':');
+        fracMin = a !== '' ? parseInt(a, 10) : null;
+        fracMax = b !== '' ? parseInt(b, 10) : null;
+      } else {
+        // Single number = exact (both min and max)
+        fracMax = parseInt(fracPart, 10);
+      }
+    }
+
+    return {
+      type: 'decimal-precision',
+      value: raw,
+      intMin,
+      intMax,
+      fracMin,
+      fracMax,
+    };
+  }
+
+  /**
    * Unescape string sequences.
    * @param {string} str
    * @returns {string}
@@ -957,6 +892,99 @@ export class SchemaParser {
       .replace(/\\t/g, '\t')
       .replace(/\\"/g, '"')
       .replace(/\\\\/g, '\\');
+  }
+
+  static PRIMITIVE_TYPES = new Set([
+    'str', 'int', 'decimal', 'float', 'bool', 'bytes', 'map',
+  ]);
+
+  /** @private */
+  extractReferencedType(typeExpr) {
+    if (!typeExpr) return null;
+    let t = typeExpr.trim();
+
+    if (t.startsWith('enum')) return null;
+
+    const mapMatch = t.match(/^map\s*<\s*(.+)\s*>\s*$/);
+    if (mapMatch) {
+      const inside = mapMatch[1];
+      let depth = 0;
+      let lastComma = -1;
+      for (let i = 0; i < inside.length; i++) {
+        if (inside[i] === '<') depth++;
+        else if (inside[i] === '>') depth--;
+        else if (inside[i] === ',' && depth === 0) lastComma = i;
+      }
+      const valueType = lastComma >= 0 ? inside.slice(lastComma + 1).trim() : inside.trim();
+      return this.extractReferencedType(valueType);
+    }
+    if (t === 'map') return null;
+
+    t = t.replace(/\([^)]*\)\s*$/, '').trim();
+
+    while (t.endsWith('[]')) {
+      t = t.slice(0, -2).trim();
+      t = t.replace(/\([^)]*\)\s*$/, '').trim();
+    }
+
+    if (!t) return null;
+    if (SchemaParser.PRIMITIVE_TYPES.has(t)) return null;
+    return t;
+  }
+
+  /** @private */
+  validateFieldTypeReferences() {
+    for (const [alias, typeDef] of this.result.schema.types.entries()) {
+      for (const field of typeDef.fields) {
+        const refType = this.extractReferencedType(field.typeExpr);
+        if (refType && !this.result.schema.types.has(refType) && !this.result.schema.resolveTypeAlias?.(refType)) {
+          throw new MaxiError(
+            `Field '${field.name}' in type '${alias}' references unknown type '${refType}'`,
+            MaxiErrorCode.UnknownTypeError,
+            { filename: this.options.filename }
+          );
+        }
+      }
+    }
+  }
+
+  /** @private */
+  validateDefaultValues() {
+    for (const [alias, typeDef] of this.result.schema.types.entries()) {
+      for (const field of typeDef.fields) {
+        if (field.defaultValue === undefined) continue;
+
+        const defVal = String(field.defaultValue);
+        const typeExpr = field.typeExpr;
+        if (!typeExpr) continue;
+
+        if (typeExpr === 'int') {
+          if (!/^-?\d+$/.test(defVal)) {
+            throw new MaxiError(
+              `Invalid default value '${field.defaultValue}' for field '${field.name}' of type 'int' in '${alias}'`,
+              MaxiErrorCode.InvalidDefaultValueError,
+              { filename: this.options.filename }
+            );
+          }
+        } else if (typeExpr === 'float' || typeExpr === 'decimal') {
+          if (isNaN(Number(defVal))) {
+            throw new MaxiError(
+              `Invalid default value '${field.defaultValue}' for field '${field.name}' of type '${typeExpr}' in '${alias}'`,
+              MaxiErrorCode.InvalidDefaultValueError,
+              { filename: this.options.filename }
+            );
+          }
+        } else if (typeExpr === 'bool') {
+          if (!['true', 'false', '1', '0'].includes(defVal)) {
+            throw new MaxiError(
+              `Invalid default value '${field.defaultValue}' for field '${field.name}' of type 'bool' in '${alias}'`,
+              MaxiErrorCode.InvalidDefaultValueError,
+              { filename: this.options.filename }
+            );
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -1003,13 +1031,11 @@ export class SchemaParser {
         }
       }
 
-      // Merge inherited fields with own fields
-      // Own fields can override inherited ones
       const finalFields = [...inheritedFields];
       for (const ownField of typeDef.fields) {
         const existingIndex = finalFields.findIndex(f => f.name === ownField.name);
         if (existingIndex >= 0) {
-          finalFields[existingIndex] = ownField; // Override
+          finalFields[existingIndex] = ownField;
         } else {
           finalFields.push(ownField);
         }
@@ -1022,19 +1048,12 @@ export class SchemaParser {
       visited.add(alias);
     };
 
-    // Resolve all types
     for (const alias of this.result.schema.types.keys()) {
       resolveType(alias);
     }
   }
 
-  /**
-   * Load and parse an external schema file.
-   * @param {string} pathOrUrl Schema file path or URL
-   * @param {number} lineNumber
-   * @returns {Promise<void>|void}
-   * @private
-   */
+  /** @private */
   async loadExternalSchema(pathOrUrl, lineNumber) {
     if (!this.options.loadSchema) {
       throw new MaxiError(
@@ -1053,15 +1072,12 @@ export class SchemaParser {
         ...this.options,
         filename: pathOrUrl
       });
-
-      // Share loading stack to detect circular imports
+      externalParser._isImported = true;
       externalParser.loadingStack = this.loadingStack;
 
       await externalParser.parse();
     } catch (error) {
-      if (error instanceof MaxiError) {
-        throw error;
-      }
+      if (error instanceof MaxiError) throw error;
 
       throw new MaxiError(
         `Failed to load schema '${pathOrUrl}': ${error?.message ?? String(error)}`,
