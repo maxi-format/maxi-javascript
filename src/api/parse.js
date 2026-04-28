@@ -3,6 +3,8 @@ import { SchemaParser } from '../internal/schema-parser.js';
 import { RecordParser } from '../internal/record-parser.js';
 import { buildObjectRegistry, validateReferences } from '../internal/reference-resolver.js';
 
+const NON_REF_TYPES = new Set(['str', 'int', 'decimal', 'float', 'bool', 'bytes']);
+
 /**
  * @typedef {Object} MaxiParseOptions
  * @property {'strict'|'lax'} [mode='lax']
@@ -31,14 +33,30 @@ export async function parseMaxi(input, options = {}) {
   }
 
   if (result.records.length > 0 && result.schema.types.size > 0) {
-    const registry = buildObjectRegistry(result);
-    Object.defineProperty(result, '_objectRegistry', {
-      value: registry,
-      enumerable: false,
-      configurable: true,
-      writable: true,
-    });
-    validateReferences(result, registry, options.filename);
+    // Only build registry if any field references another type
+    let hasRefs = false;
+    for (const [, typeDef] of result.schema.types) {
+      for (const field of typeDef.fields) {
+        if (field.typeExpr && !NON_REF_TYPES.has(field.typeExpr) &&
+            !field.typeExpr.startsWith('enum') && field.typeExpr !== 'map' &&
+            !field.typeExpr.startsWith('map<')) {
+          hasRefs = true;
+          break;
+        }
+      }
+      if (hasRefs) break;
+    }
+
+    if (hasRefs) {
+      const registry = buildObjectRegistry(result);
+      Object.defineProperty(result, '_objectRegistry', {
+        value: registry,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+      validateReferences(result, registry, options.filename);
+    }
   }
 
   return result;

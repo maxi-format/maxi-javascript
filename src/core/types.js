@@ -36,17 +36,76 @@ export class MaxiTypeDef {
     this.parents = parents;
     this.fields = fields;
     this._inheritanceResolved = false;
+    /** @type {number} Cached id field index, -1 = none, -2 = not computed */
+    this._idFieldIndex = -2;
+    /** @type {boolean[]|null} Cached per-field "isRequired" flags */
+    this._requiredFlags = null;
+    /** @type {(string[]|null)[]|null} Cached parsed enum values per field (null entry = not enum) */
+    this._enumValues = null;
+    /** @type {boolean} Whether any field has constraints needing runtime validation */
+    this._hasRuntimeConstraints = false;
   }
 
   /** @param {MaxiFieldDef} field */
-  addField(field) { this.fields.push(field); }
+  addField(field) { this.fields.push(field); this._invalidateCache(); }
 
+  /** Invalidate cached metadata (call after fields change) */
+  _invalidateCache() {
+    this._idFieldIndex = -2;
+    this._requiredFlags = null;
+    this._enumValues = null;
+  }
+
+  /** Precompute cached field metadata for fast record parsing */
+  _ensureCache() {
+    if (this._idFieldIndex !== -2) return;
+    const len = this.fields.length;
+
+    // id field index
+    this._idFieldIndex = -1;
+    for (let i = 0; i < len; i++) {
+      const f = this.fields[i];
+      if (f.constraints?.some(c => c.type === 'id')) { this._idFieldIndex = i; break; }
+    }
+    if (this._idFieldIndex === -1) {
+      for (let i = 0; i < len; i++) {
+        if (this.fields[i].name === 'id') { this._idFieldIndex = i; break; }
+      }
+    }
+
+    // required flags
+    this._requiredFlags = new Array(len);
+    for (let i = 0; i < len; i++) {
+      this._requiredFlags[i] = this.fields[i].constraints?.some(c => c.type === 'required') ?? false;
+    }
+
+    // enum values cache
+    this._enumValues = new Array(len);
+    this._hasRuntimeConstraints = false;
+    for (let i = 0; i < len; i++) {
+      const f = this.fields[i];
+      const te = f.typeExpr;
+      if (te && te.startsWith('enum')) {
+        const m = te.match(/^enum(?:<\w+>)?\[([^\]]*)\]$/);
+        this._enumValues[i] = m ? m[1].split(',').map(v => v.trim()).filter(Boolean) : null;
+      } else {
+        this._enumValues[i] = null;
+      }
+      // Check for runtime constraints (comparison, pattern, exact-length)
+      if (f.constraints) {
+        for (const c of f.constraints) {
+          if (c.type === 'comparison' || c.type === 'pattern' || c.type === 'exact-length') {
+            this._hasRuntimeConstraints = true;
+          }
+        }
+      }
+    }
+  }
 
   /** @returns {MaxiFieldDef | null} */
   getIdField() {
-    const explicitId = this.fields.find(f => f.constraints?.some(c => c.type === 'id'));
-    if (explicitId) return explicitId;
-    return this.fields.find(f => f.name === 'id') ?? null;
+    this._ensureCache();
+    return this._idFieldIndex >= 0 ? this.fields[this._idFieldIndex] : null;
   }
 }
 

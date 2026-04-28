@@ -14,6 +14,9 @@ export class RecordParser {
     this.options = options;
     /** @type {Map<string, Set<unknown>>} */
     this.seenIds = new Map();
+    // Cache frequently accessed values
+    this._isStrict = result.schema.mode === 'strict';
+    this._filename = options.filename;
   }
 
   /**
@@ -23,36 +26,28 @@ export class RecordParser {
     const text = this.recordsText;
     if (!text || !text.trim()) return;
 
-    // Fast single-pass scanner:
-    // - finds Alias(...) records (including multi-line and nested inline objects)
-    // - tracks line numbers incrementally (no substring+split per record)
     const len = text.length;
-
     let i = 0;
     let lineNumber = 1;
 
-    const isIdentStart = (c) => (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c === '_';
-    const isIdentChar = (c) =>
-      isIdentStart(c) || (c >= '0' && c <= '9') || c === '-' || c === '_';
-
     while (i < len) {
-      const ch = text[i];
+      const ch = text.charCodeAt(i);
 
       // line tracking
-      if (ch === '\n') {
+      if (ch === 10) { // \n
         lineNumber++;
         i++;
         continue;
       }
 
       // skip whitespace
-      if (ch === ' ' || ch === '\t' || ch === '\r') {
+      if (ch === 32 || ch === 9 || ch === 13) { // space, tab, \r
         i++;
         continue;
       }
 
-      // record must start with alias identifier
-      if (!isIdentStart(ch)) {
+      // record must start with identifier: A-Z, a-z, _
+      if (!((ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95)) {
         i++;
         continue;
       }
@@ -60,14 +55,23 @@ export class RecordParser {
       // parse alias
       const aliasStart = i;
       i++;
-      while (i < len && isIdentChar(text[i])) i++;
+      while (i < len) {
+        const c = text.charCodeAt(i);
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45 || c === 95) {
+          i++;
+        } else {
+          break;
+        }
+      }
       const alias = text.slice(aliasStart, i);
 
       // skip whitespace before '('
-      while (i < len && (text[i] === ' ' || text[i] === '\t' || text[i] === '\r')) i++;
+      while (i < len) {
+        const c = text.charCodeAt(i);
+        if (c === 32 || c === 9 || c === 13) { i++; } else { break; }
+      }
 
-      if (i >= len || text[i] !== '(') {
-        // not a record; keep scanning
+      if (i >= len || text.charCodeAt(i) !== 40) { // '('
         continue;
       }
 
@@ -83,9 +87,9 @@ export class RecordParser {
       let escapeNext = false;
 
       while (i < len) {
-        const c = text[i];
+        const c = text.charCodeAt(i);
 
-        if (c === '\n') lineNumber++;
+        if (c === 10) lineNumber++;
 
         if (escapeNext) {
           escapeNext = false;
@@ -94,45 +98,45 @@ export class RecordParser {
         }
 
         if (inString) {
-          if (c === '\\') {
+          if (c === 92) { // backslash
             escapeNext = true;
-          } else if (c === '"') {
+          } else if (c === 34) { // "
             inString = false;
           }
           i++;
           continue;
         }
 
-        if (c === '"') {
+        if (c === 34) { // "
           inString = true;
           i++;
           continue;
         }
 
-        if (c === '(') parenDepth++;
-        else if (c === ')') {
+        if (c === 40) parenDepth++; // (
+        else if (c === 41) { // )
           parenDepth--;
           if (parenDepth === 0) break;
-        } else if (c === '[') bracketDepth++;
-        else if (c === ']') bracketDepth = Math.max(0, bracketDepth - 1);
-        else if (c === '{') braceDepth++;
-        else if (c === '}') braceDepth = Math.max(0, braceDepth - 1);
+        } else if (c === 91) bracketDepth++; // [
+        else if (c === 93) bracketDepth = bracketDepth > 0 ? bracketDepth - 1 : 0; // ]
+        else if (c === 123) braceDepth++; // {
+        else if (c === 125) braceDepth = braceDepth > 0 ? braceDepth - 1 : 0; // }
 
         i++;
       }
 
-      if (i >= len || text[i] !== ')' || parenDepth !== 0 || bracketDepth !== 0 || braceDepth !== 0) {
+      if (i >= len || text.charCodeAt(i) !== 41 || parenDepth !== 0 || bracketDepth !== 0 || braceDepth !== 0) {
         if (bracketDepth !== 0) {
           throw new MaxiError(
             `Malformed array: unmatched bracket in record '${alias}'`,
             MaxiErrorCode.ArraySyntaxError,
-            { line: recordLine, filename: this.options.filename }
+            { line: recordLine, filename: this._filename }
           );
         }
         throw new MaxiError(
           `Unclosed record parentheses for '${alias}'`,
           MaxiErrorCode.InvalidSyntaxError,
-          { line: recordLine, filename: this.options.filename }
+          { line: recordLine, filename: this._filename }
         );
       }
 
@@ -141,8 +145,6 @@ export class RecordParser {
 
       const record = this.parseSingleRecord(alias, valuesStr, recordLine);
       this.result.records.push(record);
-
-      // continue scanning (lineNumber already updated inside record)
     }
   }
 
@@ -154,38 +156,37 @@ export class RecordParser {
    * @returns {MaxiRecord}
    */
   parseSingleRecord(alias, valuesStr, lineNumber) {
-    // Get type definition from schema
     const typeDef = this.result.schema.getType(alias);
     if (!typeDef) {
       const error = new MaxiError(
         `Unknown type alias '${alias}'`,
         MaxiErrorCode.UnknownTypeError,
-        { line: lineNumber, filename: this.options.filename }
+        { line: lineNumber, filename: this._filename }
       );
 
-      if (this.result.schema.mode === 'strict') {
+      if (this._isStrict) {
         throw error;
       }
 
-      // In lax mode, add warning and attempt best-effort parsing
       this.result.addWarning(error.message, {
         code: error.code,
         line: lineNumber
       });
 
-      // Parse values without schema validation
       const values = this.parseFieldValues(valuesStr, null, lineNumber);
       return new MaxiRecord({ alias, values, lineNumber });
     }
 
+    // Ensure cached metadata is ready
+    typeDef._ensureCache();
+
     // Parse field values according to schema
     let values = this.parseFieldValues(valuesStr, typeDef, lineNumber);
 
-    // LAX heuristic for inherited 'type' field (unchanged)
-    if (this.result.schema.mode !== 'strict') {
+    // LAX heuristic for inherited 'type' field
+    if (!this._isStrict) {
       const typeFieldIndex = typeDef.fields.findIndex(f => f.name === 'type');
       if (typeFieldIndex !== -1 && values.length === typeDef.fields.length - 1) {
-        // Insert inferred type at the "type" position
         const typeFieldDef = typeDef.fields[typeFieldIndex];
 
         let inferred = null;
@@ -203,17 +204,16 @@ export class RecordParser {
       }
     }
 
-    // Validate field count in strict mode (unchanged)
-    if (this.result.schema.mode === 'strict') {
+    // Validate field count in strict mode
+    if (this._isStrict) {
       if (values.length < typeDef.fields.length) {
-        // Check if missing fields have defaults
         for (let i = values.length; i < typeDef.fields.length; i++) {
           const field = typeDef.fields[i];
-          if (field.isRequired() && field.defaultValue === undefined) {
+          if (typeDef._requiredFlags[i] && field.defaultValue === undefined) {
             throw new MaxiError(
               `Record '${alias}' missing required field '${field.name}'`,
               MaxiErrorCode.MissingRequiredFieldError,
-              { line: lineNumber, filename: this.options.filename }
+              { line: lineNumber, filename: this._filename }
             );
           }
         }
@@ -221,18 +221,18 @@ export class RecordParser {
         throw new MaxiError(
           `Record '${alias}' has ${values.length} values but type defines ${typeDef.fields.length} fields`,
           MaxiErrorCode.SchemaMismatchError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
       }
     }
 
-    // Fill in defaults for missing trailing fields (unchanged)
-    const finalValues = [];
-    for (let i = 0; i < typeDef.fields.length; i++) {
+    // Fill in defaults for missing trailing fields + validate required
+    const fieldCount = typeDef.fields.length;
+    const finalValues = new Array(fieldCount);
+    for (let i = 0; i < fieldCount; i++) {
       const field = typeDef.fields[i];
       let value = i < values.length ? values[i] : undefined;
 
-      // Handle empty/missing values - but ONLY if value is actually undefined or empty string
       if (value === undefined || value === '') {
         if (field.defaultValue !== undefined) {
           value = field.defaultValue;
@@ -241,58 +241,65 @@ export class RecordParser {
         }
       }
 
-      // Validate required fields
-      if (field.isRequired() && value === null) {
+      // Validate required fields using cached flag
+      if (typeDef._requiredFlags[i] && value === null) {
         const error = new MaxiError(
           `Required field '${field.name}' is null in record '${alias}'`,
           MaxiErrorCode.MissingRequiredFieldError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
 
-        if (this.result.schema.mode === 'strict') {
+        if (this._isStrict) {
           throw error;
         }
         this.result.addWarning(error.message, { code: error.code, line: lineNumber });
       }
 
-      finalValues.push(value);
+      finalValues[i] = value;
     }
 
-    const isStrict = this.result.schema.mode === 'strict';
-
-    // Validate enum values
-    for (let i = 0; i < typeDef.fields.length; i++) {
-      const field = typeDef.fields[i];
-      const value = finalValues[i];
-      if (field.typeExpr && field.typeExpr.startsWith('enum')) {
-        validateEnumValue(field.typeExpr, value, field.name, isStrict, this.result, lineNumber, this.options.filename);
+    // Validate enum values using cached enum arrays
+    for (let i = 0; i < fieldCount; i++) {
+      const enumVals = typeDef._enumValues[i];
+      if (enumVals) {
+        const value = finalValues[i];
+        if (value !== null && value !== undefined) {
+          const strValue = String(value);
+          if (!enumVals.includes(strValue)) {
+            const msg = `Value '${strValue}' not in enum [${enumVals.join(',')}] for field '${typeDef.fields[i].name}'`;
+            if (this._isStrict) {
+              throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename: this._filename });
+            }
+            this.result.addWarning(msg, { code: MaxiErrorCode.ConstraintViolationError, line: lineNumber });
+          }
+        }
       }
     }
 
-    // Validate runtime constraints (comparison, pattern, exact-length)
-    validateRecordConstraints(finalValues, typeDef, isStrict, this.result, lineNumber, this.options.filename);
+    // Validate runtime constraints only if any exist
+    if (typeDef._hasRuntimeConstraints) {
+      validateRecordConstraints(finalValues, typeDef, this._isStrict, this.result, lineNumber, this._filename);
+    }
 
-    // Duplicate identifier detection (§5.3.6)
-    const idField = typeDef.getIdField();
-    if (idField) {
-      const idFieldIndex = typeDef.fields.indexOf(idField);
-      if (idFieldIndex >= 0 && idFieldIndex < finalValues.length) {
-        const idValue = finalValues[idFieldIndex];
-        if (idValue !== null && idValue !== undefined) {
-          if (!this.seenIds.has(alias)) {
-            this.seenIds.set(alias, new Set());
-          }
-          const seen = this.seenIds.get(alias);
-          const idKey = String(idValue);
-          if (seen.has(idKey)) {
-            const msg = `Duplicate identifier '${idValue}' for type '${alias}'`;
-            if (isStrict) {
-              throw new MaxiError(msg, MaxiErrorCode.DuplicateIdentifierError, { line: lineNumber, filename: this.options.filename });
-            }
-            this.result.addWarning(msg, { code: MaxiErrorCode.DuplicateIdentifierError, line: lineNumber });
-          }
-          seen.add(idKey);
+    // Duplicate identifier detection using cached index
+    const idFieldIndex = typeDef._idFieldIndex;
+    if (idFieldIndex >= 0 && idFieldIndex < finalValues.length) {
+      const idValue = finalValues[idFieldIndex];
+      if (idValue !== null && idValue !== undefined) {
+        let seen = this.seenIds.get(alias);
+        if (!seen) {
+          seen = new Set();
+          this.seenIds.set(alias, seen);
         }
+        const idKey = String(idValue);
+        if (seen.has(idKey)) {
+          const msg = `Duplicate identifier '${idValue}' for type '${alias}'`;
+          if (this._isStrict) {
+            throw new MaxiError(msg, MaxiErrorCode.DuplicateIdentifierError, { line: lineNumber, filename: this._filename });
+          }
+          this.result.addWarning(msg, { code: MaxiErrorCode.DuplicateIdentifierError, line: lineNumber });
+        }
+        seen.add(idKey);
       }
     }
 
@@ -301,21 +308,38 @@ export class RecordParser {
 
   /** @private */
   parseFieldValues(valuesStr, typeDef, lineNumber) {
-    const isSimple =
-      valuesStr.indexOf('"') === -1 &&
-      valuesStr.indexOf('(') === -1 &&
-      valuesStr.indexOf(')') === -1 &&
-      valuesStr.indexOf('[') === -1 &&
-      valuesStr.indexOf(']') === -1 &&
-      valuesStr.indexOf('{') === -1 &&
-      valuesStr.indexOf('}') === -1;
+    // Single-pass check for special characters
+    let isSimple = true;
+    for (let j = 0; j < valuesStr.length; j++) {
+      const cc = valuesStr.charCodeAt(j);
+      if (cc === 34 || cc === 40 || cc === 41 || cc === 91 || cc === 93 || cc === 123 || cc === 125) {
+        // " ( ) [ ] { }
+        isSimple = false;
+        break;
+      }
+    }
 
-    const valueStrings = isSimple ? valuesStr.split('|') : this.splitTopLevel(valuesStr, '|');
+    if (isSimple) {
+      // Fast path: split on '|' inline and parse directly
+      const fields = typeDef?.fields;
+      const values = [];
+      let start = 0;
+      let fi = 0;
+      for (let j = 0; j <= valuesStr.length; j++) {
+        if (j === valuesStr.length || valuesStr.charCodeAt(j) === 124) { // |
+          const valueStr = valuesStr.slice(start, j);
+          values.push(this.parseFieldValue(valueStr, fields?.[fi] ?? null, lineNumber));
+          fi++;
+          start = j + 1;
+        }
+      }
+      return values;
+    }
 
+    const valueStrings = this.splitTopLevel(valuesStr, '|');
     const values = [];
     for (let i = 0; i < valueStrings.length; i++) {
-      const raw = valueStrings[i];
-      const valueStr = isSimple ? raw : this.fastTrim(raw);
+      const valueStr = this.fastTrim(valueStrings[i]);
       const fieldDef = typeDef?.fields[i] ?? null;
       values.push(this.parseFieldValue(valueStr, fieldDef, lineNumber));
     }
@@ -383,61 +407,34 @@ export class RecordParser {
     if (valueStr === '') return fieldDef?.defaultValue ?? null;
     if (valueStr === '~') return null;
 
-    const c0 = valueStr[0];
-    const cLast = valueStr[valueStr.length - 1];
+    const c0 = valueStr.charCodeAt(0);
+    const cLast = valueStr.charCodeAt(valueStr.length - 1);
 
-    if (c0 === '[' && cLast !== ']') {
-      throw new MaxiError(
-        `Malformed array: unmatched opening bracket`,
-        MaxiErrorCode.ArraySyntaxError,
-        { line: lineNumber, filename: this.options.filename }
-      );
-    }
-    if (c0 === '[' && cLast === ']') return this.parseArray(valueStr, fieldDef, lineNumber);
-    if (c0 === '{' && cLast === '}') return this.parseMap(valueStr, fieldDef, lineNumber);
-    if (c0 === '(' && cLast === ')') return this.parseInlineObject(valueStr, fieldDef, lineNumber);
-    if (c0 === '"' && cLast === '"') return this.parseQuotedString(valueStr);
-
-    const typeExpr = fieldDef?.typeExpr ?? 'str';
-    const annotation = fieldDef?.annotation;
-    const isStrict = this.result?.schema?.mode === 'strict';
-
-    if (!isStrict && typeExpr === 'bytes' && annotation === 'base64') {
-      const s = valueStr;
-      if (this.looksLikeBase64(s)) {
-        const mod = s.length & 3;
-        if (mod !== 0) return s + (mod === 1 ? '===' : mod === 2 ? '==' : '=');
-      }
-      return s;
-    }
-
-    if (typeExpr === 'bool') {
-      if (valueStr === '1' || valueStr === 'true') return true;
-      if (valueStr === '0' || valueStr === 'false') return false;
-      if (isStrict) {
+    if (c0 === 91) { // [
+      if (cLast !== 93) { // ]
         throw new MaxiError(
-          `Type mismatch: field expects bool, got '${valueStr}'`,
-          MaxiErrorCode.TypeMismatchError,
-          { line: lineNumber, filename: this.options.filename }
+          `Malformed array: unmatched opening bracket`,
+          MaxiErrorCode.ArraySyntaxError,
+          { line: lineNumber, filename: this._filename }
         );
       }
-      this.result.addWarning(
-        `Type coercion: value '${valueStr}' is not a valid bool`,
-        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
-      );
-      return valueStr;
+      return this.parseArray(valueStr, fieldDef, lineNumber);
     }
+    if (c0 === 123 && cLast === 125) return this.parseMap(valueStr, fieldDef, lineNumber); // { }
+    if (c0 === 40 && cLast === 41) return this.parseInlineObject(valueStr, fieldDef, lineNumber); // ( )
+    if (c0 === 34 && cLast === 34) return this.parseQuotedString(valueStr); // " "
 
-    const nk = this.detectNumberKind(valueStr);
-    const fk = this.detectFloatKind(valueStr);
+    const typeExpr = fieldDef?.typeExpr ?? 'str';
 
+    // Fast paths for known types — avoid unnecessary detection
     if (typeExpr === 'int') {
+      const nk = this.detectNumberKind(valueStr);
       if (nk === 1) return parseInt(valueStr, 10);
-      if (isStrict) {
+      if (this._isStrict) {
         throw new MaxiError(
           `Type mismatch: field expects int, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
       }
       if (nk === 2 || nk === 3) {
@@ -454,13 +451,59 @@ export class RecordParser {
       return valueStr;
     }
 
+    if (typeExpr === 'bool') {
+      if (valueStr === '1' || valueStr === 'true') return true;
+      if (valueStr === '0' || valueStr === 'false') return false;
+      if (this._isStrict) {
+        throw new MaxiError(
+          `Type mismatch: field expects bool, got '${valueStr}'`,
+          MaxiErrorCode.TypeMismatchError,
+          { line: lineNumber, filename: this._filename }
+        );
+      }
+      this.result.addWarning(
+        `Type coercion: value '${valueStr}' is not a valid bool`,
+        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+      );
+      return valueStr;
+    }
+
+    // For explicitly typed str with no annotation, just return the string directly
+    // Only when fieldDef explicitly has typeExpr='str' (not the default fallback for untyped fields)
+    if (fieldDef?.typeExpr === 'str') {
+      return valueStr;
+    }
+
+    // For enum types with string base, return the string directly (validation done later)
+    if (typeExpr.startsWith('enum')) {
+      // Check if enum has a non-str base type like enum<int>
+      const baseMatch = typeExpr.match(/^enum<(\w+)>/);
+      if (!baseMatch || baseMatch[1] === 'str') {
+        return valueStr;
+      }
+      // For enum<int> etc, fall through to numeric coercion below
+    }
+
+    const annotation = fieldDef?.annotation;
+
+    if (!this._isStrict && typeExpr === 'bytes' && annotation === 'base64') {
+      const s = valueStr;
+      if (this.looksLikeBase64(s)) {
+        const mod = s.length & 3;
+        if (mod !== 0) return s + (mod === 1 ? '===' : mod === 2 ? '==' : '=');
+      }
+      return s;
+    }
+
     if (typeExpr === 'float') {
+      const nk = this.detectNumberKind(valueStr);
+      const fk = this.detectFloatKind(valueStr);
       if (fk || nk === 1 || nk === 2 || nk === 3) return parseFloat(valueStr);
-      if (isStrict) {
+      if (this._isStrict) {
         throw new MaxiError(
           `Type mismatch: field expects float, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
       }
       this.result.addWarning(
@@ -471,13 +514,14 @@ export class RecordParser {
     }
 
     if (typeExpr === 'decimal') {
+      const nk = this.detectNumberKind(valueStr);
       if (nk === 3) return parseInt(valueStr.slice(0, -1), 10);
       if (nk === 1 || nk === 2) return parseFloat(valueStr);
-      if (isStrict) {
+      if (this._isStrict) {
         throw new MaxiError(
           `Type mismatch: field expects decimal, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
       }
       this.result.addWarning(
@@ -487,8 +531,11 @@ export class RecordParser {
       return valueStr;
     }
 
-    if (!isStrict) {
+    // Untyped or str with annotation — try numeric coercion in lax mode
+    if (!this._isStrict) {
+      const fk = this.detectFloatKind(valueStr);
       if (fk) return parseFloat(valueStr);
+      const nk = this.detectNumberKind(valueStr);
       if (nk === 1) return parseInt(valueStr, 10);
       if (nk === 2) return parseFloat(valueStr);
       if (nk === 3) return parseInt(valueStr.slice(0, -1), 10);
