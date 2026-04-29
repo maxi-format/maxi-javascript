@@ -10,16 +10,17 @@
   "files": [
     "index.js",
     "src",
+    "docs",
     "README.md",
     "LICENSE"
   ],
   "keywords": [
     "maxi",
     "schema",
-    "xml",
     "parser",
     "serializer",
-    "dump"
+    "dump",
+    "hydration"
   ],
   "license": "MIT",
   "repository": {

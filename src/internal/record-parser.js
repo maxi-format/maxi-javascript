@@ -1,13 +1,10 @@
 import { MaxiError, MaxiErrorCode } from '../core/errors.js';
 import { MaxiRecord } from '../core/types.js';
+import { validateRecordConstraints, validateEnumValue } from './constraint-validator.js';
 
-/**
- * Records phase parser.
- * Operates on raw records text, tokenizes internally.
- */
 export class RecordParser {
   /**
-   * @param {string} recordsText Raw records section text
+   * @param {string} recordsText
    * @param {import('../core/types.js').MaxiParseResult} result
    * @param {import('../api/parse.js').MaxiParseOptions} options
    */
@@ -15,6 +12,11 @@ export class RecordParser {
     this.recordsText = recordsText;
     this.result = result;
     this.options = options;
+    /** @type {Map<string, Set<unknown>>} */
+    this.seenIds = new Map();
+    // Cache frequently accessed values
+    this._isStrict = result.schema.mode === 'strict';
+    this._filename = options.filename;
   }
 
   /**
@@ -24,36 +26,28 @@ export class RecordParser {
     const text = this.recordsText;
     if (!text || !text.trim()) return;
 
-    // Fast single-pass scanner:
-    // - finds Alias(...) records (including multi-line and nested inline objects)
-    // - tracks line numbers incrementally (no substring+split per record)
     const len = text.length;
-
     let i = 0;
     let lineNumber = 1;
 
-    const isIdentStart = (c) => (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c === '_';
-    const isIdentChar = (c) =>
-      isIdentStart(c) || (c >= '0' && c <= '9') || c === '-' || c === '_';
-
     while (i < len) {
-      const ch = text[i];
+      const ch = text.charCodeAt(i);
 
       // line tracking
-      if (ch === '\n') {
+      if (ch === 10) { // \n
         lineNumber++;
         i++;
         continue;
       }
 
       // skip whitespace
-      if (ch === ' ' || ch === '\t' || ch === '\r') {
+      if (ch === 32 || ch === 9 || ch === 13) { // space, tab, \r
         i++;
         continue;
       }
 
-      // record must start with alias identifier
-      if (!isIdentStart(ch)) {
+      // record must start with identifier: A-Z, a-z, _
+      if (!((ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95)) {
         i++;
         continue;
       }
@@ -61,14 +55,23 @@ export class RecordParser {
       // parse alias
       const aliasStart = i;
       i++;
-      while (i < len && isIdentChar(text[i])) i++;
+      while (i < len) {
+        const c = text.charCodeAt(i);
+        if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45 || c === 95) {
+          i++;
+        } else {
+          break;
+        }
+      }
       const alias = text.slice(aliasStart, i);
 
       // skip whitespace before '('
-      while (i < len && (text[i] === ' ' || text[i] === '\t' || text[i] === '\r')) i++;
+      while (i < len) {
+        const c = text.charCodeAt(i);
+        if (c === 32 || c === 9 || c === 13) { i++; } else { break; }
+      }
 
-      if (i >= len || text[i] !== '(') {
-        // not a record; keep scanning
+      if (i >= len || text.charCodeAt(i) !== 40) { // '('
         continue;
       }
 
@@ -84,9 +87,9 @@ export class RecordParser {
       let escapeNext = false;
 
       while (i < len) {
-        const c = text[i];
+        const c = text.charCodeAt(i);
 
-        if (c === '\n') lineNumber++;
+        if (c === 10) lineNumber++;
 
         if (escapeNext) {
           escapeNext = false;
@@ -95,38 +98,45 @@ export class RecordParser {
         }
 
         if (inString) {
-          if (c === '\\') {
+          if (c === 92) { // backslash
             escapeNext = true;
-          } else if (c === '"') {
+          } else if (c === 34) { // "
             inString = false;
           }
           i++;
           continue;
         }
 
-        if (c === '"') {
+        if (c === 34) { // "
           inString = true;
           i++;
           continue;
         }
 
-        if (c === '(') parenDepth++;
-        else if (c === ')') {
+        if (c === 40) parenDepth++; // (
+        else if (c === 41) { // )
           parenDepth--;
           if (parenDepth === 0) break;
-        } else if (c === '[') bracketDepth++;
-        else if (c === ']') bracketDepth = Math.max(0, bracketDepth - 1);
-        else if (c === '{') braceDepth++;
-        else if (c === '}') braceDepth = Math.max(0, braceDepth - 1);
+        } else if (c === 91) bracketDepth++; // [
+        else if (c === 93) bracketDepth = bracketDepth > 0 ? bracketDepth - 1 : 0; // ]
+        else if (c === 123) braceDepth++; // {
+        else if (c === 125) braceDepth = braceDepth > 0 ? braceDepth - 1 : 0; // }
 
         i++;
       }
 
-      if (i >= len || text[i] !== ')' || parenDepth !== 0 || bracketDepth !== 0 || braceDepth !== 0) {
+      if (i >= len || text.charCodeAt(i) !== 41 || parenDepth !== 0 || bracketDepth !== 0 || braceDepth !== 0) {
+        if (bracketDepth !== 0) {
+          throw new MaxiError(
+            `Malformed array: unmatched bracket in record '${alias}'`,
+            MaxiErrorCode.ArraySyntaxError,
+            { line: recordLine, filename: this._filename }
+          );
+        }
         throw new MaxiError(
           `Unclosed record parentheses for '${alias}'`,
           MaxiErrorCode.InvalidSyntaxError,
-          { line: recordLine, filename: this.options.filename }
+          { line: recordLine, filename: this._filename }
         );
       }
 
@@ -135,52 +145,48 @@ export class RecordParser {
 
       const record = this.parseSingleRecord(alias, valuesStr, recordLine);
       this.result.records.push(record);
-
-      // continue scanning (lineNumber already updated inside record)
     }
   }
 
   /**
-   * Parse a single record's values string.
+   * Parse a single record and return a MaxiRecord.
    * @param {string} alias
-   * @param {string} valuesStr The content between the record's parentheses.
+   * @param {string} valuesStr
    * @param {number} lineNumber
    * @returns {MaxiRecord}
-   * @private
    */
   parseSingleRecord(alias, valuesStr, lineNumber) {
-    // Get type definition from schema
     const typeDef = this.result.schema.getType(alias);
     if (!typeDef) {
       const error = new MaxiError(
         `Unknown type alias '${alias}'`,
         MaxiErrorCode.UnknownTypeError,
-        { line: lineNumber, filename: this.options.filename }
+        { line: lineNumber, filename: this._filename }
       );
 
-      if (this.result.schema.mode === 'strict') {
+      if (this._isStrict) {
         throw error;
       }
 
-      // In lax mode, add warning and attempt best-effort parsing
       this.result.addWarning(error.message, {
         code: error.code,
         line: lineNumber
       });
 
-      // Parse values without schema validation
       const values = this.parseFieldValues(valuesStr, null, lineNumber);
       return new MaxiRecord({ alias, values, lineNumber });
     }
 
+    // Ensure cached metadata is ready
+    typeDef._ensureCache();
+
     // Parse field values according to schema
     let values = this.parseFieldValues(valuesStr, typeDef, lineNumber);
 
-    // LAX heuristic for inherited 'type' field (unchanged)
-    if (this.result.schema.mode !== 'strict') {
+    // LAX heuristic for inherited 'type' field
+    if (!this._isStrict) {
       const typeFieldIndex = typeDef.fields.findIndex(f => f.name === 'type');
       if (typeFieldIndex !== -1 && values.length === typeDef.fields.length - 1) {
-        // Insert inferred type at the "type" position
         const typeFieldDef = typeDef.fields[typeFieldIndex];
 
         let inferred = null;
@@ -198,17 +204,16 @@ export class RecordParser {
       }
     }
 
-    // Validate field count in strict mode (unchanged)
-    if (this.result.schema.mode === 'strict') {
+    // Validate field count in strict mode
+    if (this._isStrict) {
       if (values.length < typeDef.fields.length) {
-        // Check if missing fields have defaults
         for (let i = values.length; i < typeDef.fields.length; i++) {
           const field = typeDef.fields[i];
-          if (field.isRequired() && field.defaultValue === undefined) {
+          if (typeDef._requiredFlags[i] && field.defaultValue === undefined) {
             throw new MaxiError(
               `Record '${alias}' missing required field '${field.name}'`,
               MaxiErrorCode.MissingRequiredFieldError,
-              { line: lineNumber, filename: this.options.filename }
+              { line: lineNumber, filename: this._filename }
             );
           }
         }
@@ -216,18 +221,18 @@ export class RecordParser {
         throw new MaxiError(
           `Record '${alias}' has ${values.length} values but type defines ${typeDef.fields.length} fields`,
           MaxiErrorCode.SchemaMismatchError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
       }
     }
 
-    // Fill in defaults for missing trailing fields (unchanged)
-    const finalValues = [];
-    for (let i = 0; i < typeDef.fields.length; i++) {
+    // Fill in defaults for missing trailing fields + validate required
+    const fieldCount = typeDef.fields.length;
+    const finalValues = new Array(fieldCount);
+    for (let i = 0; i < fieldCount; i++) {
       const field = typeDef.fields[i];
       let value = i < values.length ? values[i] : undefined;
 
-      // Handle empty/missing values - but ONLY if value is actually undefined or empty string
       if (value === undefined || value === '') {
         if (field.defaultValue !== undefined) {
           value = field.defaultValue;
@@ -236,70 +241,116 @@ export class RecordParser {
         }
       }
 
-      // Validate required fields
-      if (field.isRequired() && value === null) {
+      // Validate required fields using cached flag
+      if (typeDef._requiredFlags[i] && value === null) {
         const error = new MaxiError(
           `Required field '${field.name}' is null in record '${alias}'`,
           MaxiErrorCode.MissingRequiredFieldError,
-          { line: lineNumber, filename: this.options.filename }
+          { line: lineNumber, filename: this._filename }
         );
 
-        if (this.result.schema.mode === 'strict') {
+        if (this._isStrict) {
           throw error;
         }
         this.result.addWarning(error.message, { code: error.code, line: lineNumber });
       }
 
-      finalValues.push(value);
+      finalValues[i] = value;
+    }
+
+    // Validate enum values using cached enum arrays
+    for (let i = 0; i < fieldCount; i++) {
+      const enumVals = typeDef._enumValues[i];
+      if (enumVals) {
+        const value = finalValues[i];
+        if (value !== null && value !== undefined) {
+          const strValue = String(value);
+          if (!enumVals.includes(strValue)) {
+            const msg = `Value '${strValue}' not in enum [${enumVals.join(',')}] for field '${typeDef.fields[i].name}'`;
+            if (this._isStrict) {
+              throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename: this._filename });
+            }
+            this.result.addWarning(msg, { code: MaxiErrorCode.ConstraintViolationError, line: lineNumber });
+          }
+        }
+      }
+    }
+
+    // Validate runtime constraints only if any exist
+    if (typeDef._hasRuntimeConstraints) {
+      validateRecordConstraints(finalValues, typeDef, this._isStrict, this.result, lineNumber, this._filename);
+    }
+
+    // Duplicate identifier detection using cached index
+    const idFieldIndex = typeDef._idFieldIndex;
+    if (idFieldIndex >= 0 && idFieldIndex < finalValues.length) {
+      const idValue = finalValues[idFieldIndex];
+      if (idValue !== null && idValue !== undefined) {
+        let seen = this.seenIds.get(alias);
+        if (!seen) {
+          seen = new Set();
+          this.seenIds.set(alias, seen);
+        }
+        const idKey = String(idValue);
+        if (seen.has(idKey)) {
+          const msg = `Duplicate identifier '${idValue}' for type '${alias}'`;
+          if (this._isStrict) {
+            throw new MaxiError(msg, MaxiErrorCode.DuplicateIdentifierError, { line: lineNumber, filename: this._filename });
+          }
+          this.result.addWarning(msg, { code: MaxiErrorCode.DuplicateIdentifierError, line: lineNumber });
+        }
+        seen.add(idKey);
+      }
     }
 
     return new MaxiRecord({ alias, values: finalValues, lineNumber });
   }
 
-  /**
-   * Parse field values from record content.
-   * @param {string} valuesStr Field values string
-   * @param {import('../core/types.js').MaxiTypeDef | null} typeDef Type definition (null for untyped)
-   * @param {number} lineNumber
-   * @returns {unknown[]}
-   * @private
-   */
+  /** @private */
   parseFieldValues(valuesStr, typeDef, lineNumber) {
-    // Fast path: simple records have no nested structures or quotes.
-    const isSimple =
-      valuesStr.indexOf('"') === -1 &&
-      valuesStr.indexOf('(') === -1 &&
-      valuesStr.indexOf(')') === -1 &&
-      valuesStr.indexOf('[') === -1 &&
-      valuesStr.indexOf(']') === -1 &&
-      valuesStr.indexOf('{') === -1 &&
-      valuesStr.indexOf('}') === -1;
+    // Single-pass check for special characters
+    let isSimple = true;
+    for (let j = 0; j < valuesStr.length; j++) {
+      const cc = valuesStr.charCodeAt(j);
+      if (cc === 34 || cc === 40 || cc === 41 || cc === 91 || cc === 93 || cc === 123 || cc === 125) {
+        // " ( ) [ ] { }
+        isSimple = false;
+        break;
+      }
+    }
 
-    const valueStrings = isSimple ? valuesStr.split('|') : this.splitTopLevel(valuesStr, '|');
+    if (isSimple) {
+      // Fast path: split on '|' inline and parse directly
+      const fields = typeDef?.fields;
+      const values = [];
+      let start = 0;
+      let fi = 0;
+      for (let j = 0; j <= valuesStr.length; j++) {
+        if (j === valuesStr.length || valuesStr.charCodeAt(j) === 124) { // |
+          const valueStr = valuesStr.slice(start, j);
+          values.push(this.parseFieldValue(valueStr, fields?.[fi] ?? null, lineNumber));
+          fi++;
+          start = j + 1;
+        }
+      }
+      return values;
+    }
 
+    const valueStrings = this.splitTopLevel(valuesStr, '|');
     const values = [];
     for (let i = 0; i < valueStrings.length; i++) {
-      const raw = valueStrings[i];
-      const valueStr = isSimple ? raw : this.fastTrim(raw);
+      const valueStr = this.fastTrim(valueStrings[i]);
       const fieldDef = typeDef?.fields[i] ?? null;
       values.push(this.parseFieldValue(valueStr, fieldDef, lineNumber));
     }
-
-
     return values;
   }
 
-  /**
-   * Splits a string by a delimiter only at the top level (not inside quotes, parens, brackets, or braces).
-   * PERF: uses indices + slice (avoids per-char string concatenation).
-   * @private
-   */
+  /** @private */
   splitTopLevel(str, delimiter) {
     /** @type {string[]} */
     const parts = [];
-
     let partStart = 0;
-
     let parenDepth = 0;
     let bracketDepth = 0;
     let braceDepth = 0;
@@ -308,22 +359,13 @@ export class RecordParser {
 
     for (let i = 0; i < str.length; i++) {
       const char = str[i];
-
-      if (escapeNext) {
-        escapeNext = false;
-        continue;
-      }
-
+      if (escapeNext) { escapeNext = false; continue; }
       if (inString) {
         if (char === '\\') escapeNext = true;
         else if (char === '"') inString = false;
         continue;
       }
-
-      if (char === '"') {
-        inString = true;
-        continue;
-      }
+      if (char === '"') { inString = true; continue; }
 
       if (char === '(') parenDepth++;
       else if (char === ')') parenDepth--;
@@ -342,143 +384,158 @@ export class RecordParser {
     return parts;
   }
 
-  /**
-   * Faster trim that avoids allocating when no surrounding whitespace.
-   * @param {string} s
-   * @returns {string}
-   * @private
-   */
+  /** @private */
   fastTrim(s) {
     let start = 0;
     let end = s.length;
-
     while (start < end) {
       const c = s.charCodeAt(start);
-      if (c !== 32 && c !== 9 && c !== 10 && c !== 13) break; // SP HTAB LF CR
+      if (c !== 32 && c !== 9 && c !== 10 && c !== 13) break;
       start++;
     }
-
     while (end > start) {
       const c = s.charCodeAt(end - 1);
       if (c !== 32 && c !== 9 && c !== 10 && c !== 13) break;
       end--;
     }
-
     if (start === 0 && end === s.length) return s;
     return s.slice(start, end);
   }
 
-  /**
-   * Parse a single field value.
-   * @param {string} valueStr
-   * @param {import('../core/types.js').MaxiFieldDef | null} fieldDef
-   * @param {number} lineNumber
-   * @returns {unknown}
-   * @private
-   */
+  /** @private */
   parseFieldValue(valueStr, fieldDef, lineNumber) {
-    // Hot path: avoid repeated optional chaining / string trims.
-    // Empty value
-    if (valueStr === '') {
-      return fieldDef?.defaultValue ?? null;
-    }
+    if (valueStr === '') return fieldDef?.defaultValue ?? null;
+    if (valueStr === '~') return null;
 
-    // Explicit null
-    if (valueStr === '~') {
-      return null;
-    }
+    const c0 = valueStr.charCodeAt(0);
+    const cLast = valueStr.charCodeAt(valueStr.length - 1);
 
-    // Array / Map / Inline object / Quoted string: keep as-is
-    const c0 = valueStr[0];
-    const cLast = valueStr[valueStr.length - 1];
-
-    // Array
-    if (c0 === '[' && cLast === ']') {
+    if (c0 === 91) { // [
+      if (cLast !== 93) { // ]
+        throw new MaxiError(
+          `Malformed array: unmatched opening bracket`,
+          MaxiErrorCode.ArraySyntaxError,
+          { line: lineNumber, filename: this._filename }
+        );
+      }
       return this.parseArray(valueStr, fieldDef, lineNumber);
     }
-
-    // Map
-    if (c0 === '{' && cLast === '}') {
-      return this.parseMap(valueStr, fieldDef, lineNumber);
-    }
-
-    // Inline object
-    if (c0 === '(' && cLast === ')') {
-      // Fast path: inline object with no nested structures/quotes inside
-      // (common for small embedded objects); otherwise fall back.
-      const inner = valueStr.slice(1, -1);
-      const isInlineSimple =
-        inner.indexOf('"') === -1 &&
-        inner.indexOf('(') === -1 &&
-        inner.indexOf(')') === -1 &&
-        inner.indexOf('[') === -1 &&
-        inner.indexOf(']') === -1 &&
-        inner.indexOf('{') === -1 &&
-        inner.indexOf('}') === -1;
-
-      if (isInlineSimple) {
-        // parseInlineObject expects "(...)", so keep it, but it will use parseFieldValues
-        // which will hit the simple split path.
-        return this.parseInlineObject(valueStr, fieldDef, lineNumber);
-      }
-
-      return this.parseInlineObject(valueStr, fieldDef, lineNumber);
-    }
-
-    // Quoted string
-    if (c0 === '"' && cLast === '"') {
-      return this.parseQuotedString(valueStr);
-    }
+    if (c0 === 123 && cLast === 125) return this.parseMap(valueStr, fieldDef, lineNumber); // { }
+    if (c0 === 40 && cLast === 41) return this.parseInlineObject(valueStr, fieldDef, lineNumber); // ( )
+    if (c0 === 34 && cLast === 34) return this.parseQuotedString(valueStr); // " "
 
     const typeExpr = fieldDef?.typeExpr ?? 'str';
+
+    // Fast paths for known types — avoid unnecessary detection
+    if (typeExpr === 'int') {
+      const nk = this.detectNumberKind(valueStr);
+      if (nk === 1) return parseInt(valueStr, 10);
+      if (this._isStrict) {
+        throw new MaxiError(
+          `Type mismatch: field expects int, got '${valueStr}'`,
+          MaxiErrorCode.TypeMismatchError,
+          { line: lineNumber, filename: this._filename }
+        );
+      }
+      if (nk === 2 || nk === 3) {
+        this.result.addWarning(
+          `Type coercion: value '${valueStr}' coerced to int, fractional part lost`,
+          { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+        );
+        return parseInt(valueStr, 10);
+      }
+      this.result.addWarning(
+        `Type mismatch: field expects int, got '${valueStr}'`,
+        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+      );
+      return valueStr;
+    }
+
+    if (typeExpr === 'bool') {
+      if (valueStr === '1' || valueStr === 'true') return true;
+      if (valueStr === '0' || valueStr === 'false') return false;
+      if (this._isStrict) {
+        throw new MaxiError(
+          `Type mismatch: field expects bool, got '${valueStr}'`,
+          MaxiErrorCode.TypeMismatchError,
+          { line: lineNumber, filename: this._filename }
+        );
+      }
+      this.result.addWarning(
+        `Type coercion: value '${valueStr}' is not a valid bool`,
+        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+      );
+      return valueStr;
+    }
+
+    // For explicitly typed str with no annotation, just return the string directly
+    // Only when fieldDef explicitly has typeExpr='str' (not the default fallback for untyped fields)
+    if (fieldDef?.typeExpr === 'str') {
+      return valueStr;
+    }
+
+    // For enum types with string base, return the string directly (validation done later)
+    if (typeExpr.startsWith('enum')) {
+      // Check if enum has a non-str base type like enum<int>
+      const baseMatch = typeExpr.match(/^enum<(\w+)>/);
+      if (!baseMatch || baseMatch[1] === 'str') {
+        return valueStr;
+      }
+      // For enum<int> etc, fall through to numeric coercion below
+    }
+
     const annotation = fieldDef?.annotation;
 
-    // LAX: bytes@base64 padding normalization (avoid regex)
-    if (this.result?.schema?.mode !== 'strict' && typeExpr === 'bytes' && annotation === 'base64') {
+    if (!this._isStrict && typeExpr === 'bytes' && annotation === 'base64') {
       const s = valueStr;
       if (this.looksLikeBase64(s)) {
-        const mod = s.length & 3; // %4
+        const mod = s.length & 3;
         if (mod !== 0) return s + (mod === 1 ? '===' : mod === 2 ? '==' : '=');
       }
       return s;
     }
 
-    // Boolean: ONLY coerce when the schema says bool
-    if (typeExpr === 'bool') {
-      // Accept both token-efficient and verbose forms
-      if (valueStr === '1' || valueStr === 'true') return true;
-      if (valueStr === '0' || valueStr === 'false') return false;
-      return valueStr;
-    }
-
-    // Numbers: use fast detector instead of regex
-    const nk = this.detectNumberKind(valueStr);
-
-    if (typeExpr === 'int') {
-      if (nk === 1) {
-        // parseInt on known-good digits is fast
-        const num = parseInt(valueStr, 10);
-        return num;
+    if (typeExpr === 'float') {
+      const nk = this.detectNumberKind(valueStr);
+      const fk = this.detectFloatKind(valueStr);
+      if (fk || nk === 1 || nk === 2 || nk === 3) return parseFloat(valueStr);
+      if (this._isStrict) {
+        throw new MaxiError(
+          `Type mismatch: field expects float, got '${valueStr}'`,
+          MaxiErrorCode.TypeMismatchError,
+          { line: lineNumber, filename: this._filename }
+        );
       }
-      // "500." is not int
+      this.result.addWarning(
+        `Type coercion: value '${valueStr}' is not a valid float`,
+        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+      );
       return valueStr;
     }
 
     if (typeExpr === 'decimal') {
-      if (nk === 3) {
-        // "500." => int 500 (fixture behavior)
-        const num = parseInt(valueStr.slice(0, -1), 10);
-        return num;
+      const nk = this.detectNumberKind(valueStr);
+      if (nk === 3) return parseInt(valueStr.slice(0, -1), 10);
+      if (nk === 1 || nk === 2) return parseFloat(valueStr);
+      if (this._isStrict) {
+        throw new MaxiError(
+          `Type mismatch: field expects decimal, got '${valueStr}'`,
+          MaxiErrorCode.TypeMismatchError,
+          { line: lineNumber, filename: this._filename }
+        );
       }
-      if (nk === 1 || nk === 2) {
-        const num = parseFloat(valueStr);
-        return num;
-      }
+      this.result.addWarning(
+        `Type coercion: value '${valueStr}' is not a valid decimal`,
+        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+      );
       return valueStr;
     }
 
-    // LAX fallback numeric coercion only when schema isn't numeric
-    if (this.result?.schema?.mode !== 'strict') {
+    // Untyped or str with annotation — try numeric coercion in lax mode
+    if (!this._isStrict) {
+      const fk = this.detectFloatKind(valueStr);
+      if (fk) return parseFloat(valueStr);
+      const nk = this.detectNumberKind(valueStr);
       if (nk === 1) return parseInt(valueStr, 10);
       if (nk === 2) return parseFloat(valueStr);
       if (nk === 3) return parseInt(valueStr.slice(0, -1), 10);
@@ -487,14 +544,7 @@ export class RecordParser {
     return valueStr;
   }
 
-  /**
-   * Parse array value.
-   * @param {string} arrayStr
-   * @param {import('../core/types.js').MaxiFieldDef | null} fieldDef
-   * @param {number} lineNumber
-   * @returns {unknown[]}
-   * @private
-   */
+  /** @private */
   parseArray(arrayStr, fieldDef, lineNumber) {
     // Remove brackets
     const content = arrayStr.slice(1, -1).trim();
@@ -514,53 +564,29 @@ export class RecordParser {
     for (let i = 0; i < content.length; i++) {
       const char = content[i];
 
-      if (escapeNext) {
-        currentElement += char;
-        escapeNext = false;
-        continue;
-      }
-
-      if (char === '\\' && inString) {
-        currentElement += char;
-        escapeNext = true;
-        continue;
-      }
-
-      if (char === '"') {
-        inString = !inString;
-        currentElement += char;
-        continue;
-      }
+      if (escapeNext) { currentElement += char; escapeNext = false; continue; }
+      if (char === '\\' && inString) { currentElement += char; escapeNext = true; continue; }
+      if (char === '"') { inString = !inString; currentElement += char; continue; }
 
       if (!inString) {
         if (char === '(' || char === '[' || char === '{') depth++;
         else if (char === ')' || char === ']' || char === '}') depth--;
-
         if (char === ',' && depth === 0) {
           elements.push(this.parseFieldValue(currentElement.trim(), elemFieldDef, lineNumber));
           currentElement = '';
           continue;
         }
       }
-
       currentElement += char;
     }
 
     if (currentElement.trim() !== '') {
       elements.push(this.parseFieldValue(currentElement.trim(), elemFieldDef, lineNumber));
     }
-
     return elements;
   }
 
-  /**
-   * Parse map value.
-   * @param {string} mapStr
-   * @param {import('../core/types.js').MaxiFieldDef | null} fieldDef
-   * @param {number} lineNumber
-   * @returns {Object}
-   * @private
-   */
+  /** @private */
   parseMap(mapStr, fieldDef, lineNumber) {
     // Remove braces
     const content = mapStr.slice(1, -1).trim();
@@ -580,55 +606,30 @@ export class RecordParser {
     for (let i = 0; i < content.length; i++) {
       const char = content[i];
 
-      if (escapeNext) {
-        currentEntry += char;
-        escapeNext = false;
-        continue;
-      }
-
-      if (char === '\\' && inString) {
-        currentEntry += char;
-        escapeNext = true;
-        continue;
-      }
-
-      if (char === '"') {
-        inString = !inString;
-        currentEntry += char;
-        continue;
-      }
+      if (escapeNext) { currentEntry += char; escapeNext = false; continue; }
+      if (char === '\\' && inString) { currentEntry += char; escapeNext = true; continue; }
+      if (char === '"') { inString = !inString; currentEntry += char; continue; }
 
       if (!inString) {
         if (char === '(' || char === '[' || char === '{') depth++;
         else if (char === ')' || char === ']' || char === '}') depth--;
-
         if (char === ',' && depth === 0) {
           this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef);
           currentEntry = '';
           continue;
         }
       }
-
       currentEntry += char;
     }
 
-    if (currentEntry.trim()) {
-      this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef);
-    }
-
+    if (currentEntry.trim()) this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef);
     return map;
   }
 
-  /**
-   * Extract the map value type from a type expression.
-   * @param {string | null | undefined} typeExpr
-   * @returns {string | null}
-   * @private
-   */
+  /** @private */
   getMapValueType(typeExpr) {
     if (!typeExpr) return null;
     const t = typeExpr.trim();
-
     // "map" (untyped)
     if (t === 'map') return null;
 
@@ -637,7 +638,6 @@ export class RecordParser {
     if (!m) return null;
 
     const inside = m[1];
-
     // split top-level by comma
     let depth = 0;
     let inString = false;
@@ -649,23 +649,14 @@ export class RecordParser {
 
       if (inString) {
         if (ch === '"' && inside[i - 1] !== '\\') inString = false;
-        cur += ch;
-        continue;
+        cur += ch; continue;
       }
-      if (ch === '"') {
-        inString = true;
-        cur += ch;
-        continue;
-      }
+      if (ch === '"') { inString = true; cur += ch; continue; }
 
       if (ch === '<') depth++;
       else if (ch === '>') depth = Math.max(0, depth - 1);
 
-      if (ch === ',' && depth === 0) {
-        parts.push(cur.trim());
-        cur = '';
-        continue;
-      }
+      if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
       cur += ch;
     }
     if (cur.trim()) parts.push(cur.trim());
@@ -675,14 +666,7 @@ export class RecordParser {
     return parts[parts.length - 1] || null;
   }
 
-  /**
-   * Parse single map entry.
-   * @param {string} entryStr
-   * @param {Object} map
-   * @param {number} lineNumber
-   * @param {{typeExpr: string} | null} valueFieldDef
-   * @private
-   */
+  /** @private */
   parseMapEntry(entryStr, map, lineNumber, valueFieldDef = null) {
     // Find colon separator (not inside strings or nested structures)
     let colonIndex = -1;
@@ -693,30 +677,18 @@ export class RecordParser {
     for (let i = 0; i < entryStr.length; i++) {
       const ch = entryStr[i];
 
-      if (escapeNext) {
-        escapeNext = false;
-        continue;
-      }
+      if (escapeNext) { escapeNext = false; continue; }
       if (inString) {
-        if (ch === '\\') {
-          escapeNext = true;
-          continue;
-        }
+        if (ch === '\\') { escapeNext = true; continue; }
         if (ch === '"') inString = false;
         continue;
       }
-      if (ch === '"') {
-        inString = true;
-        continue;
-      }
+      if (ch === '"') { inString = true; continue; }
 
       if (ch === '(' || ch === '[' || ch === '{') depth++;
       else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
 
-      if (ch === ':' && depth === 0) {
-        colonIndex = i;
-        break;
-      }
+      if (ch === ':' && depth === 0) { colonIndex = i; break; }
     }
 
     if (colonIndex === -1) {
@@ -729,26 +701,16 @@ export class RecordParser {
 
     const keyStr = entryStr.slice(0, colonIndex).trim();
     const valueStr = entryStr.slice(colonIndex + 1).trim();
-
-    // Keys are strings in projected JSON; parse as string (supports quoted keys)
     const key = this.parseFieldValue(keyStr, { typeExpr: 'str' }, lineNumber);
     const value = this.parseFieldValue(valueStr, valueFieldDef, lineNumber);
-
     map[String(key)] = value;
   }
 
-  /**
-   * Parse inline object and return a plain JS object (not MaxiRecord),
-   * mapping values to the referenced schema type's fields.
-   * @private
-   */
+  /** @private */
   parseInlineObject(objStr, fieldDef, lineNumber) {
     const innerValuesStr = objStr.slice(1, -1);
-
     const typeAlias = this.getInlineObjectTypeAlias(fieldDef?.typeExpr);
-    if (!typeAlias) {
-      return { values: this.parseFieldValues(innerValuesStr, null, lineNumber) };
-    }
+    if (!typeAlias) return { values: this.parseFieldValues(innerValuesStr, null, lineNumber) };
 
     const typeDef = this.result.schema.getType(typeAlias);
     if (!typeDef) {
@@ -767,27 +729,17 @@ export class RecordParser {
     }
 
     const values = this.parseFieldValues(innerValuesStr, typeDef, lineNumber);
-
-    // FIX: apply same trailing-default/null semantics as top-level records
     const obj = {};
     for (let i = 0; i < typeDef.fields.length; i++) {
       const field = typeDef.fields[i];
       let v = i < values.length ? values[i] : undefined;
-
-      if (v === undefined || v === '') {
-        if (field.defaultValue !== undefined) v = field.defaultValue;
-        else v = null;
-      }
-
+      if (v === undefined || v === '') v = field.defaultValue !== undefined ? field.defaultValue : null;
       obj[field.name] = v;
     }
     return obj;
   }
 
-  /**
-   * Infer inline object type alias from a field type expression (alias or name).
-   * @private
-   */
+  /** @private */
   getInlineObjectTypeAlias(typeExpr) {
     if (!typeExpr) return null;
     const t = typeExpr.trim();
@@ -805,14 +757,10 @@ export class RecordParser {
 
     const primitives = ['str', 'int', 'decimal', 'bool', 'bytes', 'map'];
     if (primitives.includes(base)) return null;
-
     return this.result.schema.resolveTypeAlias?.(base) ?? base;
   }
 
-  /**
-   * Extract array element type from a type expression, e.g. "int[]" -> "int".
-   * @private
-   */
+  /** @private */
   getArrayElementType(typeExpr) {
     if (!typeExpr) return null;
     const t = typeExpr.trim();
@@ -821,10 +769,7 @@ export class RecordParser {
     return (m[1] || '').trim() || null;
   }
 
-  /**
-   * Parse quoted string with escape sequences.
-   * @private
-   */
+  /** @private */
   parseQuotedString(str) {
     let result = str.slice(1, -1);
     result = result.replace(/\\n/g, '\n');
@@ -835,10 +780,44 @@ export class RecordParser {
     return result;
   }
 
-  // --- NEW: small helpers for hot-path parsing (avoid regex) ---
+  /** @private */
+  detectFloatKind(s) {
+    const n = s.length;
+    if (n === 0) return false;
+
+    let i = 0;
+    if (s.charCodeAt(0) === 45) { if (n === 1) return false; i = 1; }
+
+    let cc = s.charCodeAt(i);
+    if (cc < 48 || cc > 57) return false;
+
+    while (i < n) { cc = s.charCodeAt(i); if (cc < 48 || cc > 57) break; i++; }
+    if (i >= n) return false;
+
+    if (cc === 46) {
+      i++;
+      while (i < n) { cc = s.charCodeAt(i); if (cc < 48 || cc > 57) break; i++; }
+    }
+
+    if (i >= n) return false;
+    cc = s.charCodeAt(i);
+    if (cc !== 101 && cc !== 69) return false;
+    i++;
+    if (i >= n) return false;
+
+    cc = s.charCodeAt(i);
+    if (cc === 43 || cc === 45) { i++; if (i >= n) return false; }
+
+    cc = s.charCodeAt(i);
+    if (cc < 48 || cc > 57) return false;
+
+    while (i < n) { cc = s.charCodeAt(i); if (cc < 48 || cc > 57) return false; i++; }
+    return true;
+  }
+
   /**
    * @param {string} s
-   * @returns {number} 0 = not numeric, 1 = int-like, 2 = decimal-like, 3 = int-with-trailing-dot (e.g. "500.")
+   * @returns {number} 0=not numeric, 1=int, 2=decimal, 3=trailing-dot
    * @private
    */
   detectNumberKind(s) {
@@ -846,63 +825,33 @@ export class RecordParser {
     if (n === 0) return 0;
 
     let i = 0;
-    const c0 = s.charCodeAt(0);
-    if (c0 === 45 /* '-' */) {
-      if (n === 1) return 0;
-      i = 1;
-    }
+    if (s.charCodeAt(0) === 45) { if (n === 1) return 0; i = 1; }
 
-    // must start with digit
     let cc = s.charCodeAt(i);
     if (cc < 48 || cc > 57) return 0;
 
-    // consume digits
-    while (i < n) {
-      cc = s.charCodeAt(i);
-      if (cc < 48 || cc > 57) break;
-      i++;
-    }
+    while (i < n) { cc = s.charCodeAt(i); if (cc < 48 || cc > 57) break; i++; }
+    if (i === n) return 1;
+    if (s.charCodeAt(i) !== 46) return 0;
+    i++;
+    if (i === n) return 3;
 
-    if (i === n) return 1; // pure int
-
-    if (s.charCodeAt(i) !== 46 /* '.' */) return 0;
-    i++; // past '.'
-
-    if (i === n) return 3; // trailing dot
-
-    // must have at least one digit after dot for decimal
     cc = s.charCodeAt(i);
     if (cc < 48 || cc > 57) return 0;
 
-    while (i < n) {
-      cc = s.charCodeAt(i);
-      if (cc < 48 || cc > 57) return 0;
-      i++;
-    }
-
-    return 2; // decimal
+    while (i < n) { cc = s.charCodeAt(i); if (cc < 48 || cc > 57) return 0; i++; }
+    return 2;
   }
 
-  /**
-   * @param {string} s
-   * @returns {boolean}
-   * @private
-   */
+  /** @private */
   looksLikeBase64(s) {
-    // Fast-ish check: allow A-Z a-z 0-9 + / and '=' at end
-    // No regex allocation in hot path.
     const n = s.length;
     if (n === 0) return false;
     let pad = 0;
     for (let i = 0; i < n; i++) {
       const c = s.charCodeAt(i);
-      if (c === 61 /* '=' */) {
-        pad++;
-        continue;
-      }
-      // once padding started, only '=' allowed
+      if (c === 61) { pad++; continue; }
       if (pad > 0) return false;
-
       const isAZ = c >= 65 && c <= 90;
       const isaz = c >= 97 && c <= 122;
       const is09 = c >= 48 && c <= 57;

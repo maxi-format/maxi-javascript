@@ -2,211 +2,161 @@
  * Core MAXI type definitions (IR - Intermediate Representation).
  */
 
-/**
- * @typedef {'strict'|'lax'} MaxiMode
- */
+/** @typedef {'strict'|'lax'} MaxiMode */
 
-/**
- * MAXI schema containing type definitions and directives.
- */
 export class MaxiSchema {
   constructor() {
     /** @type {string} */
     this.version = '1.0.0';
     /** @type {MaxiMode} */
     this.mode = 'lax';
-    /** @type {string[]} Schema imports (@schema directives) */
+    /** @type {string[]} */
     this.imports = [];
-    /** @type {Map<string, MaxiTypeDef>} alias -> typedef */
+    /** @type {Map<string, MaxiTypeDef>} */
     this.types = new Map();
   }
 
-  /**
-   * Add or update a type definition.
-   * @param {MaxiTypeDef} typeDef
-   */
-  addType(typeDef) {
-    this.types.set(typeDef.alias, typeDef);
-  }
+  /** @param {MaxiTypeDef} typeDef */
+  addType(typeDef) { this.types.set(typeDef.alias, typeDef); }
 
-  /**
-   * Get type by alias.
-   * @param {string} alias
-   * @returns {MaxiTypeDef | undefined}
-   */
-  getType(alias) {
-    return this.types.get(alias);
-  }
+  /** @param {string} alias @returns {MaxiTypeDef | undefined} */
+  getType(alias) { return this.types.get(alias); }
 
-  /**
-   * Check if type exists.
-   * @param {string} alias
-   * @returns {boolean}
-   */
-  hasType(alias) {
-    return this.types.has(alias);
-  }
+  /** @param {string} alias @returns {boolean} */
+  hasType(alias) { return this.types.has(alias); }
 }
 
-/**
- * Type definition with inheritance support.
- */
 export class MaxiTypeDef {
   /**
    * @param {{alias: string, name?: string|null, parents?: string[], fields?: MaxiFieldDef[]}} args
    */
   constructor({ alias, name = null, parents = [], fields = [] }) {
-    /** @type {string} Short alias (e.g., "U") */
     this.alias = alias;
-    /** @type {string|null} Full type name (e.g., "User"), optional */
     this.name = name;
-    /** @type {string[]} Parent type aliases for inheritance */
     this.parents = parents;
-    /** @type {MaxiFieldDef[]} Field definitions (after inheritance resolution) */
     this.fields = fields;
-    /** @type {boolean} Whether inheritance has been resolved */
     this._inheritanceResolved = false;
+    /** @type {number} Cached id field index, -1 = none, -2 = not computed */
+    this._idFieldIndex = -2;
+    /** @type {boolean[]|null} Cached per-field "isRequired" flags */
+    this._requiredFlags = null;
+    /** @type {(string[]|null)[]|null} Cached parsed enum values per field (null entry = not enum) */
+    this._enumValues = null;
+    /** @type {boolean} Whether any field has constraints needing runtime validation */
+    this._hasRuntimeConstraints = false;
   }
 
-  /**
-   * Add a field to this type.
-   * @param {MaxiFieldDef} field
-   */
-  addField(field) {
-    this.fields.push(field);
+  /** @param {MaxiFieldDef} field */
+  addField(field) { this.fields.push(field); this._invalidateCache(); }
+
+  /** Invalidate cached metadata (call after fields change) */
+  _invalidateCache() {
+    this._idFieldIndex = -2;
+    this._requiredFlags = null;
+    this._enumValues = null;
   }
 
-  /**
-   * Get field by name.
-   * @param {string} name
-   * @returns {MaxiFieldDef | undefined}
-   */
-  getField(name) {
-    return this.fields.find(f => f.name === name);
+  /** Precompute cached field metadata for fast record parsing */
+  _ensureCache() {
+    if (this._idFieldIndex !== -2) return;
+    const len = this.fields.length;
+
+    // id field index
+    this._idFieldIndex = -1;
+    for (let i = 0; i < len; i++) {
+      const f = this.fields[i];
+      if (f.constraints?.some(c => c.type === 'id')) { this._idFieldIndex = i; break; }
+    }
+    if (this._idFieldIndex === -1) {
+      for (let i = 0; i < len; i++) {
+        if (this.fields[i].name === 'id') { this._idFieldIndex = i; break; }
+      }
+    }
+
+    // required flags
+    this._requiredFlags = new Array(len);
+    for (let i = 0; i < len; i++) {
+      this._requiredFlags[i] = this.fields[i].constraints?.some(c => c.type === 'required') ?? false;
+    }
+
+    // enum values cache
+    this._enumValues = new Array(len);
+    this._hasRuntimeConstraints = false;
+    for (let i = 0; i < len; i++) {
+      const f = this.fields[i];
+      const te = f.typeExpr;
+      if (te && te.startsWith('enum')) {
+        const m = te.match(/^enum(?:<\w+>)?\[([^\]]*)\]$/);
+        this._enumValues[i] = m ? m[1].split(',').map(v => v.trim()).filter(Boolean) : null;
+      } else {
+        this._enumValues[i] = null;
+      }
+      // Check for runtime constraints (comparison, pattern, exact-length)
+      if (f.constraints) {
+        for (const c of f.constraints) {
+          if (c.type === 'comparison' || c.type === 'pattern' || c.type === 'exact-length') {
+            this._hasRuntimeConstraints = true;
+          }
+        }
+      }
+    }
   }
 
-  /**
-   * Get identifier field (marked with 'id' constraint or named 'id').
-   * @returns {MaxiFieldDef | null}
-   */
+  /** @returns {MaxiFieldDef | null} */
   getIdField() {
-    // First check for explicit 'id' constraint
-    const explicitId = this.fields.find(f =>
-      f.constraints?.some(c => c.type === 'id')
-    );
-    if (explicitId) return explicitId;
-
-    // Fall back to field named 'id'
-    return this.fields.find(f => f.name === 'id') ?? null;
+    this._ensureCache();
+    return this._idFieldIndex >= 0 ? this.fields[this._idFieldIndex] : null;
   }
 }
 
 /**
- * Parsed constraint representation.
  * @typedef {Object} ParsedConstraint
  * @property {'required'|'id'|'comparison'|'pattern'|'mime'|'decimal-precision'|'exact-length'} type
- * @property {any} [value] Constraint value (depends on type)
+ * @property {any} [value]
  */
 
-/**
- * Field definition with type and constraint information.
- */
 export class MaxiFieldDef {
   /**
-   * @param {{name: string, typeExpr?: string|null, annotation?: string|null, constraints?: ParsedConstraint[]|null, defaultValue?: unknown}} args
+   * @param {{name: string, typeExpr?: string|null, annotation?: string|null, constraints?: ParsedConstraint[]|null, elementConstraints?: ParsedConstraint[]|null, defaultValue?: unknown}} args
    */
-  constructor({ name, typeExpr = null, annotation = null, constraints = null, defaultValue = undefined }) {
-    /** @type {string} Field name */
+  constructor({ name, typeExpr = null, annotation = null, constraints = null, elementConstraints = null, defaultValue = undefined }) {
     this.name = name;
-    /** @type {string|null} Raw type expression (e.g., "int", "str[]", "User") */
     this.typeExpr = typeExpr;
-    /** @type {string|null} Type annotation (e.g., "email", "datetime") */
     this.annotation = annotation;
-    /** @type {ParsedConstraint[]|null} Parsed constraints */
     this.constraints = constraints;
-    /** @type {unknown} Default value (parsed and coerced) */
+    this.elementConstraints = elementConstraints;
     this.defaultValue = defaultValue;
   }
 
-  /**
-   * Check if field is required (has '!' constraint).
-   * @returns {boolean}
-   */
-  isRequired() {
-    return this.constraints?.some(c => c.type === 'required') ?? false;
-  }
+  /** @returns {boolean} */
+  isRequired() { return this.constraints?.some(c => c.type === 'required') ?? false; }
 
-  /**
-   * Check if field is an identifier (has 'id' constraint or name is 'id').
-   * @returns {boolean}
-   */
-  isId() {
-    return this.constraints?.some(c => c.type === 'id') ?? this.name === 'id';
-  }
-
-  /**
-   * Get base type (without array/map wrappers).
-   * @returns {string}
-   */
-  getBaseType() {
-    if (!this.typeExpr) return 'str';
-    // Remove array suffix
-    const noArray = this.typeExpr.replace(/\[\]$/, '');
-    // Remove map prefix
-    const noMap = noArray.replace(/^map(<.*>)?$/, 'str');
-    return noMap || 'str';
-  }
+  /** @returns {boolean} */
+  isId() { return this.constraints?.some(c => c.type === 'id') ?? false; }
 }
 
-/**
- * Data record instance.
- */
 export class MaxiRecord {
   /**
    * @param {{alias: string, values?: unknown[], lineNumber?: number}} args
    */
   constructor({ alias, values = [], lineNumber = null }) {
-    /** @type {string} Type alias */
     this.alias = alias;
-    /** @type {unknown[]} Field values (positional) */
     this.values = values;
-    /** @type {number|null} Source line number for debugging */
     this.lineNumber = lineNumber;
-  }
-
-  /**
-   * Get value by field index.
-   * @param {number} index
-   * @returns {unknown}
-   */
-  getValue(index) {
-    return this.values[index];
-  }
-
-  /**
-   * Get identifier value (first field by convention, or explicit id field).
-   * @returns {unknown}
-   */
-  getId() {
-    return this.values[0];
   }
 }
 
-/**
- * Parse result containing schema and data records.
- */
 export class MaxiParseResult {
   constructor() {
     /** @type {MaxiSchema} */
     this.schema = new MaxiSchema();
-    /** @type {MaxiRecord[]} Data records */
+    /** @type {MaxiRecord[]} */
     this.records = [];
     /** @type {Array<{message: string, code?: string, line?: number, column?: number}>} */
     this.warnings = [];
   }
 
   /**
-   * Add a warning.
    * @param {string} message
    * @param {{code?: string, line?: number, column?: number}} [meta]
    */
