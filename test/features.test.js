@@ -3,23 +3,6 @@ import assert from 'node:assert/strict';
 
 import { parseMaxi } from '../src/api/parse.js';
 
-test('features: int[][] parses nested arrays', async () => {
-  const input = `M:Matrix(id:int|data:int[][])
-###
-M(1|[[1,2,3],[4,5,6]])`;
-
-  const res = await parseMaxi(input);
-  assert.deepEqual(res.records[0].values[1], [[1, 2, 3], [4, 5, 6]]);
-});
-
-test('features: str[][] parses nested string arrays', async () => {
-  const input = `T:Table(id:int|rows:str[][])
-###
-T(1|[[a,b],[c,d]])`;
-
-  const res = await parseMaxi(input);
-  assert.deepEqual(res.records[0].values[1], [['a', 'b'], ['c', 'd']]);
-});
 
 test('features: int[][][] three-dimensional array', async () => {
   const input = `C:Cube(id:int|data:int[][][])
