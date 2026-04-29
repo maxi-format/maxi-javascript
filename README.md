@@ -2,163 +2,96 @@
 
 JavaScript library for parsing and dumping **MAXI schema + records**.
 
-- `parseMaxi(input, options)` → parses MAXI text into a structured result (schema + records)
-- `streamMaxi(input, options)` → parses schema immediately and returns an async iterator for records
-- `dumpMaxi(data, options)` → serializes objects/records back into MAXI text
-
 Version: `1.0.0-draft`
 
 ## Install
 
-Install from GitHub:
 ```bash
 npm install maxi-format/maxi-javascript
 ```
 
+## API overview
+
+| Function | Description |
+|---|---|
+| `parseMaxi(input, options?)` | Parse MAXI text → `MaxiParseResult` (schema + raw records) |
+| `streamMaxi(input, options?)` | Parse schema eagerly, yield records lazily via async iterator |
+| `parseMaxiAs(input, classMap, options?)` | Parse + hydrate records into class instances |
+| `parseMaxiAutoAs(input, classes, options?)` | Same, with alias inferred from `static maxiSchema` |
+| `dumpMaxi(data, options?)` | Serialize objects / parse results → MAXI text |
+| `dumpMaxiAuto(objects, options?)` | Same, with schema inferred from `static maxiSchema` |
+| `defineMaxiSchema(Class, schema)` | Register a schema descriptor for a class (WeakMap-based) |
+| `getMaxiSchema(ClassOrInstance)` | Look up a registered schema descriptor |
+
 ## Quick start
 
-### Parse (in-memory)
+### Parse
 
 ```js
-import { parseMaxi } from "maxi-schema";
+import { parseMaxi } from 'maxi-schema';
 
-(async () => {
-  const input = `
+const input = `
 U:User(id:int|name|email)
 ###
 U(1|Julie|julie@maxi.org)
 `.trim();
 
-  const res = await parseMaxi(input, { mode: "lax" });
-  console.log(res.records[0].alias);   // "U"
-  console.log(res.records[0].values);  // [1, "Julie", "julie@maxi.org"]
-})();
+const res = await parseMaxi(input);
+console.log(res.records[0].values); // [1, 'Julie', 'julie@maxi.org']
 ```
 
-### Parse (streaming)
-
-For large files, `streamMaxi` parses the schema immediately and returns an async iterator that yields records one at a time.
+### Parse into class instances
 
 ```js
-import { streamMaxi } from "maxi-schema";
+import { parseMaxiAutoAs } from 'maxi-schema';
 
-(async () => {
-  const input = `
-U:User(id:int|name|email)
-###
-U(1|Julie|julie@maxi.org)
-U(2|Matt|matt@maxi.org)
-`.trim();
+class User {
+  static maxiSchema = {
+    alias: 'U',
+    fields: [{ name: 'id', typeExpr: 'int' }, { name: 'name' }, { name: 'email' }],
+  };
+  constructor({ id, name, email } = {}) { this.id = id; this.name = name; this.email = email; }
+}
 
-  const stream = await streamMaxi(input);
-
-  // Schema is available immediately
-  console.log(stream.schema.getType('U').fields.map(f => f.name));
-
-  // Iterate over records as they are parsed
-  for await (const record of stream) {
-    console.log(record.values);
-  }
-})();
+const { objects } = await parseMaxiAutoAs(input, [User]);
+console.log(objects.U[0] instanceof User); // true
+console.log(objects.U[0].name);            // 'Julie'
 ```
 
 ### Dump
 
-Dump a single object/array by providing `defaultAlias`, or dump a map of `{ alias: [objects...] }`.
+```js
+import { dumpMaxiAuto } from 'maxi-schema';
+
+const maxi = dumpMaxiAuto([new User({ id: 1, name: 'Julie' })]);
+```
+
+Or with explicit types via `dumpMaxi`:
 
 ```js
-import { dumpMaxi } from "maxi-schema";
+import { dumpMaxi } from 'maxi-schema';
 
-const maxi = dumpMaxi(
-  [{ id: 1, name: "Julie" }, { id: 2, name: "Matt", email: null }],
-  {
-    defaultAlias: "U",
-    types: [
-      {
-        alias: "U",
-        name: "User",
-        fields: [
-          { name: "id", typeExpr: "int" },
-          { name: "name" },
-          { name: "email", defaultValue: "unknown" }
-        ]
-      }
-    ]
-  }
-);
-
-console.log(maxi);
+const maxi = dumpMaxi([{ id: 1, name: 'Julie' }], {
+  defaultAlias: 'U',
+  types: [{ alias: 'U', name: 'User', fields: [{ name: 'id', typeExpr: 'int' }, { name: 'name' }] }],
+});
 ```
 
-## API
+## Documentation
 
-### `parseMaxi(input, options?)`
+- **[docs/parser.md](docs/parser.md)** — full parser guide: `parseMaxi`, `streamMaxi`, `parseMaxiAs`, `parseMaxiAutoAs`, hydration, reference resolution, options
+- **[docs/dumper.md](docs/dumper.md)** — full dumper guide: `dumpMaxi`, `dumpMaxiAuto`, schema-annotated classes, references, inheritance, options
 
-- `input: string` MAXI content
-- `options.mode: "lax" | "strict"` (default: `"lax"`)
-  - `lax`: best-effort parsing, accumulates warnings for recoverable errors
-  - `strict`: fails on any deviation from the schema
-- `options.filename?: string` used in error messages
-- `options.loadSchema?: (pathOrUrl: string) => string | Promise<string>`
-  - used to resolve `@schema:...` imports
+## MAXI format (quick reference)
 
-Returns a `MaxiParseResult` containing:
-- `schema` (types, directives/imports)
-- `records` (array of `{ alias, values }`)
-- `warnings` (array of errors encountered in lax mode)
-
-### `streamMaxi(input, options?)`
-
-Parses MAXI content in a streaming fashion. It returns a `Promise` that resolves to a `MaxiStreamResult`.
-
-- `input` and `options` are the same as `parseMaxi`.
-
-The resolved `MaxiStreamResult` object has:
-- `schema`: The fully parsed schema, available immediately.
-- `warnings`: An array for storing warnings.
-- `records()`: An async generator method that yields records one by one.
-- The result object is also an async-iterable, so you can use `for await...of` directly on it.
-
-### `dumpMaxi(data, options?)`
-
-`data` can be one of:
-- a single object (requires `options.defaultAlias`)
-- an array of objects (requires `options.defaultAlias`)
-- a map `{ [alias]: object[] }`
-- a previously parsed parse-result-like object (for round-tripping)
-
-Common options:
-- `defaultAlias?: string` required for single object / array input
-- `types?: Array<{ alias, name?, parents?, fields: [...] }> | Map<alias, type>` inline schema types
-- `includeTypes?: boolean` (default: `true`) include type definitions in output
-- `schemaFile?: string` emit `@schema:<path>` import directive
-- `version?: string` emit `@version:<x>` when not `1.0.0`
-- `mode?: "strict" | "lax"` emit `@mode:strict` when strict
-- `multiline?: boolean` pretty multi-line types/records
-- `collectReferences?: boolean` (default: `true`)
-  - promotes nested typed objects with an `id` field into their own top-level records
-  - and replaces references with the nested object’s `id`
-
-## MAXI snippet (very small overview)
-
-Type definition:
 ```
-U:User(id:int|name|email=unknown)
+U:User(id:int|name|email=unknown)   ← type definition
+###                                  ← section separator
+U(1|Julie|~)                         ← record  (~ = explicit null)
 ```
 
-Records section delimiter:
-```
-###
-```
-
-Record:
-```
-U(1|Julie|~)
-```
-
-Notes:
-- omitted trailing fields may use defaults (when defined in schema)
-- `~` represents explicit null
+- Omitted trailing fields use their declared default value.
+- See the [MAXI spec](SPEC.md) for the full format definition.
 
 ## Test
 
