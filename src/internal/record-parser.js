@@ -2,6 +2,9 @@ import { MaxiError, MaxiErrorCode } from '../core/errors.js';
 import { MaxiRecord } from '../core/types.js';
 import { validateRecordConstraints, validateEnumValue } from './constraint-validator.js';
 
+/** Sentinel for explicit null (~) to distinguish from missing/empty values. */
+const EXPLICIT_NULL = Object.freeze({});
+
 export class RecordParser {
   /**
    * @param {string} recordsText
@@ -233,7 +236,19 @@ export class RecordParser {
       const field = typeDef.fields[i];
       let value = i < values.length ? values[i] : undefined;
 
-      if (value === undefined || value === '') {
+      if (value === EXPLICIT_NULL) {
+        // Explicit ~ — do NOT apply default; warn/error if required+has default
+        if (typeDef._requiredFlags[i] && field.defaultValue !== undefined) {
+          const error = new MaxiError(
+            `Field '${field.name}' is required with a default; explicit null (~) is not allowed`,
+            MaxiErrorCode.MissingRequiredFieldError,
+            { line: lineNumber, filename: this._filename }
+          );
+          if (this._isStrict) throw error;
+          this.result.addWarning(error.message, { code: error.code, line: lineNumber });
+        }
+        value = null;
+      } else if (value === undefined || value === '') {
         if (field.defaultValue !== undefined) {
           value = field.defaultValue;
         } else {
@@ -327,7 +342,7 @@ export class RecordParser {
       let fi = 0;
       for (let j = 0; j <= valuesStr.length; j++) {
         if (j === valuesStr.length || valuesStr.charCodeAt(j) === 124) { // |
-          const valueStr = valuesStr.slice(start, j);
+          const valueStr = this.fastTrim(valuesStr.slice(start, j));
           values.push(this.parseFieldValue(valueStr, fields?.[fi] ?? null, lineNumber));
           fi++;
           start = j + 1;
@@ -405,7 +420,7 @@ export class RecordParser {
   /** @private */
   parseFieldValue(valueStr, fieldDef, lineNumber) {
     if (valueStr === '') return fieldDef?.defaultValue ?? null;
-    if (valueStr === '~') return null;
+    if (valueStr === '~') return EXPLICIT_NULL;
 
     const c0 = valueStr.charCodeAt(0);
     const cLast = valueStr.charCodeAt(valueStr.length - 1);
@@ -733,7 +748,8 @@ export class RecordParser {
     for (let i = 0; i < typeDef.fields.length; i++) {
       const field = typeDef.fields[i];
       let v = i < values.length ? values[i] : undefined;
-      if (v === undefined || v === '') v = field.defaultValue !== undefined ? field.defaultValue : null;
+      if (v === EXPLICIT_NULL) v = null;
+      else if (v === undefined || v === '') v = field.defaultValue !== undefined ? field.defaultValue : null;
       obj[field.name] = v;
     }
     return obj;
