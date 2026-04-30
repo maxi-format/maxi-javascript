@@ -76,6 +76,23 @@ function splitSections(input) {
     const hasInheritanceTypeDef = /^[ \t]*[A-Za-z_][A-Za-z0-9_-]*[ \t]*<[^>]+>[ \t]*\(/m.test(input);
 
     if (hasDirective || hasExplicitTypeDef || hasInheritanceTypeDef) {
+      if (hasDirective && !hasExplicitTypeDef && !hasInheritanceTypeDef) {
+        const lines = input.split(/\r?\n/);
+        const schemaLines = [];
+        const recordLines = [];
+        for (const line of lines) {
+          if (/^[ \t]*@/.test(line) || !line.trim() || line.trim().startsWith('#')) {
+            schemaLines.push(line);
+          } else {
+            recordLines.push(line);
+          }
+        }
+        const recordsText = recordLines.join('\n').trim();
+        return {
+          schemaSection: schemaLines.join('\n').trim(),
+          recordsSection: recordsText || null
+        };
+      }
       return { schemaSection: input, recordsSection: null };
     }
     return { schemaSection: '', recordsSection: input };

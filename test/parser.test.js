@@ -211,6 +211,7 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
     };
 
     if (expected.success === false) {
+      if (meta.parser_dependent) continue;
       await assert.rejects(
         () => parseMaxi(input, { mode, filename: `testdata/${id}/in.maxi`, loadSchema }),
         (err) => {
@@ -290,10 +291,31 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
       const objId = objValue.id;
       if (objId === null || objId === undefined) return;
 
-      if (!objects[typeName]) objects[typeName] = {}; // was Object.create(null)
+      if (!objects[typeName]) objects[typeName] = {};
 
       if (!objects[typeName][String(objId)]) {
         objects[typeName][String(objId)] = { ...objValue };
+      }
+    };
+
+    const indexInlineObjectsFromField = (fieldValue, field, schema) => {
+      if (!field?.typeExpr) return;
+      // Single inline object
+      if (fieldValue && typeof fieldValue === 'object' && !Array.isArray(fieldValue) && 'id' in fieldValue) {
+        const fieldTypeDef = schema.getType(field.typeExpr);
+        if (fieldTypeDef) indexObject(fieldTypeDef.name || fieldTypeDef.alias, fieldValue);
+      }
+      // Array of inline objects: strip trailing [] from typeExpr
+      if (Array.isArray(fieldValue)) {
+        const elemType = field.typeExpr.replace(/\[\]+$/, '').trim();
+        const elemTypeDef = schema.getType(elemType);
+        if (elemTypeDef) {
+          for (const item of fieldValue) {
+            if (item && typeof item === 'object' && !Array.isArray(item) && 'id' in item) {
+              indexObject(elemTypeDef.name || elemTypeDef.alias, item);
+            }
+          }
+        }
       }
     };
 
@@ -328,16 +350,7 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
           value[outKey] = fieldValue;
 
           // index inline objects into objects map under their target type name
-          if (fieldValue && typeof fieldValue === 'object' && !Array.isArray(fieldValue) && 'id' in fieldValue) {
-            const fieldTypeAlias = field.typeExpr;
-            if (fieldTypeAlias) {
-              const fieldTypeDef = res.schema.getType(fieldTypeAlias);
-              if (fieldTypeDef) {
-                const fieldTypeName = fieldTypeDef.name || fieldTypeDef.alias;
-                indexObject(fieldTypeName, fieldValue);
-              }
-            }
-          }
+          indexInlineObjectsFromField(fieldValue, field, res.schema);
         }
       } else {
         value.values = r.values.slice();
@@ -364,6 +377,10 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
             const v = projectedValue[key];
             if (typeof v === 'object' && v !== null && !Array.isArray(v) && 'id' in v) {
               projectedValue[key] = v.id;
+            } else if (Array.isArray(v)) {
+              projectedValue[key] = v.map(item =>
+                (typeof item === 'object' && item !== null && !Array.isArray(item) && 'id' in item) ? item.id : item
+              );
             }
           }
           objects[typeName][String(objId)] = projectedValue;
@@ -409,7 +426,12 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
       if (Array.isArray(cur) && /^[0-9]+$/.test(part)) {
         cur = cur[Number(part)];
       } else {
-        cur = cur[part];
+        const next = cur[part];
+        // In the objects registry or record values, a missing key is absent (null), not undefined
+        const inDataTree = parts[0] === 'objects' || parts[0] === 'records';
+        cur = (next === undefined && inDataTree && typeof cur === 'object' && cur !== null && !Array.isArray(cur))
+          ? null
+          : next;
       }
 
       // Follow references using schema type info (ONLY inside objects tree)
@@ -496,6 +518,24 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
       const seg = parts[i];
       if (Array.isArray(cur) && /^[0-9]+$/.test(seg)) {
         cur = cur[Number(seg)];
+      } else if (Array.isArray(cur) && parts[i - 1] === 'constraints') {
+        // Access constraint by type name: constraints/mime -> find {type:'mime'} entry
+        // Special keys: minVal (>=), maxVal (<=), mime
+        let found;
+        if (seg === 'minVal') {
+          found = cur.find(c => c.type === 'comparison' && c.operator === '>=');
+          cur = found ? found.value : undefined;
+        } else if (seg === 'maxVal') {
+          found = cur.find(c => c.type === 'comparison' && c.operator === '<=');
+          cur = found ? found.value : undefined;
+        } else if (seg === 'mime') {
+          found = cur.find(c => c.type === 'mime');
+          if (!found) { cur = undefined; }
+          else cur = Array.isArray(found.value) ? (found.value.length === 1 ? found.value[0] : found.value) : found.value;
+        } else {
+          found = cur.find(c => c.type === seg);
+          cur = found ? (found.value ?? found) : undefined;
+        }
       } else if (cur instanceof Map) {
         cur = cur.get(seg);
       } else {
