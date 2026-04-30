@@ -17,7 +17,6 @@ export class RecordParser {
     this.options = options;
     /** @type {Map<string, Set<unknown>>} */
     this.seenIds = new Map();
-    // Cache frequently accessed values
     this._isStrict = result.schema.mode === 'strict';
     this._filename = options.filename;
   }
@@ -32,30 +31,42 @@ export class RecordParser {
     const len = text.length;
     let i = 0;
     let lineNumber = 1;
+    let atLineStart = true;
 
     while (i < len) {
       const ch = text.charCodeAt(i);
 
-      // line tracking
-      if (ch === 10) { // \n
+      if (ch === 10) {
         lineNumber++;
         i++;
+        atLineStart = true;
         continue;
       }
 
-      // skip whitespace
-      if (ch === 32 || ch === 9 || ch === 13) { // space, tab, \r
+      if (ch === 32 || ch === 9 || ch === 13) {
         i++;
         continue;
       }
 
-      // record must start with identifier: A-Z, a-z, _
+      if (ch === 35) {
+        atLineStart = false;
+        while (i < len && text.charCodeAt(i) !== 10) i++;
+        continue;
+      }
+
       if (!((ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch === 95)) {
+        if (atLineStart) {
+          throw new MaxiError(
+            `Invalid syntax in data section: unexpected character at line ${lineNumber}`,
+            MaxiErrorCode.InvalidSyntaxError,
+            { line: lineNumber, filename: this._filename }
+          );
+        }
         i++;
         continue;
       }
+      atLineStart = false;
 
-      // parse alias
       const aliasStart = i;
       i++;
       while (i < len) {
@@ -68,19 +79,25 @@ export class RecordParser {
       }
       const alias = text.slice(aliasStart, i);
 
-      // skip whitespace before '('
       while (i < len) {
         const c = text.charCodeAt(i);
         if (c === 32 || c === 9 || c === 13) { i++; } else { break; }
       }
 
-      if (i >= len || text.charCodeAt(i) !== 40) { // '('
+      if (i < len && text.charCodeAt(i) === 58) {
+        throw new MaxiError(
+          `Type definition '${text.slice(aliasStart, i)}:...' found in data section (after ###). Type definitions must appear before ###.`,
+          MaxiErrorCode.StreamError,
+          { line: lineNumber, filename: this._filename }
+        );
+      }
+
+      if (i >= len || text.charCodeAt(i) !== 40) {
         continue;
       }
 
-      // parse (...) with nesting & string handling
       const recordLine = lineNumber;
-      i++; // past '('
+      i++;
       const valuesStart = i;
 
       let parenDepth = 1;
@@ -101,29 +118,29 @@ export class RecordParser {
         }
 
         if (inString) {
-          if (c === 92) { // backslash
+          if (c === 92) {
             escapeNext = true;
-          } else if (c === 34) { // "
+          } else if (c === 34) {
             inString = false;
           }
           i++;
           continue;
         }
 
-        if (c === 34) { // "
+        if (c === 34) {
           inString = true;
           i++;
           continue;
         }
 
-        if (c === 40) parenDepth++; // (
-        else if (c === 41) { // )
+        if (c === 40) parenDepth++;
+        else if (c === 41) {
           parenDepth--;
           if (parenDepth === 0) break;
-        } else if (c === 91) bracketDepth++; // [
-        else if (c === 93) bracketDepth = bracketDepth > 0 ? bracketDepth - 1 : 0; // ]
-        else if (c === 123) braceDepth++; // {
-        else if (c === 125) braceDepth = braceDepth > 0 ? braceDepth - 1 : 0; // }
+        } else if (c === 91) bracketDepth++;
+        else if (c === 93) bracketDepth = bracketDepth > 0 ? bracketDepth - 1 : 0;
+        else if (c === 123) braceDepth++;
+        else if (c === 125) braceDepth = braceDepth > 0 ? braceDepth - 1 : 0;
 
         i++;
       }
@@ -144,7 +161,7 @@ export class RecordParser {
       }
 
       const valuesStr = text.slice(valuesStart, i);
-      i++; // past ')'
+      i++;
 
       const record = this.parseSingleRecord(alias, valuesStr, recordLine);
       this.result.records.push(record);
@@ -180,13 +197,10 @@ export class RecordParser {
       return new MaxiRecord({ alias, values, lineNumber });
     }
 
-    // Ensure cached metadata is ready
     typeDef._ensureCache();
 
-    // Parse field values according to schema
     let values = this.parseFieldValues(valuesStr, typeDef, lineNumber);
 
-    // LAX heuristic for inherited 'type' field
     if (!this._isStrict) {
       const typeFieldIndex = typeDef.fields.findIndex(f => f.name === 'type');
       if (typeFieldIndex !== -1 && values.length === typeDef.fields.length - 1) {
@@ -207,7 +221,6 @@ export class RecordParser {
       }
     }
 
-    // Validate field count in strict mode
     if (this._isStrict) {
       if (values.length < typeDef.fields.length) {
         for (let i = values.length; i < typeDef.fields.length; i++) {
@@ -229,7 +242,6 @@ export class RecordParser {
       }
     }
 
-    // Fill in defaults for missing trailing fields + validate required
     const fieldCount = typeDef.fields.length;
     const finalValues = new Array(fieldCount);
     for (let i = 0; i < fieldCount; i++) {
@@ -237,7 +249,6 @@ export class RecordParser {
       let value = i < values.length ? values[i] : undefined;
 
       if (value === EXPLICIT_NULL) {
-        // Explicit ~ — do NOT apply default; warn/error if required+has default
         if (typeDef._requiredFlags[i] && field.defaultValue !== undefined) {
           const error = new MaxiError(
             `Field '${field.name}' is required with a default; explicit null (~) is not allowed`,
@@ -256,7 +267,6 @@ export class RecordParser {
         }
       }
 
-      // Validate required fields using cached flag
       if (typeDef._requiredFlags[i] && value === null) {
         const error = new MaxiError(
           `Required field '${field.name}' is null in record '${alias}'`,
@@ -273,7 +283,6 @@ export class RecordParser {
       finalValues[i] = value;
     }
 
-    // Validate enum values using cached enum arrays
     for (let i = 0; i < fieldCount; i++) {
       const enumVals = typeDef._enumValues[i];
       if (enumVals) {
@@ -291,12 +300,10 @@ export class RecordParser {
       }
     }
 
-    // Validate runtime constraints only if any exist
     if (typeDef._hasRuntimeConstraints) {
       validateRecordConstraints(finalValues, typeDef, this._isStrict, this.result, lineNumber, this._filename);
     }
 
-    // Duplicate identifier detection using cached index
     const idFieldIndex = typeDef._idFieldIndex;
     if (idFieldIndex >= 0 && idFieldIndex < finalValues.length) {
       const idValue = finalValues[idFieldIndex];
@@ -323,25 +330,22 @@ export class RecordParser {
 
   /** @private */
   parseFieldValues(valuesStr, typeDef, lineNumber) {
-    // Single-pass check for special characters
     let isSimple = true;
     for (let j = 0; j < valuesStr.length; j++) {
       const cc = valuesStr.charCodeAt(j);
       if (cc === 34 || cc === 40 || cc === 41 || cc === 91 || cc === 93 || cc === 123 || cc === 125) {
-        // " ( ) [ ] { }
         isSimple = false;
         break;
       }
     }
 
     if (isSimple) {
-      // Fast path: split on '|' inline and parse directly
       const fields = typeDef?.fields;
       const values = [];
       let start = 0;
       let fi = 0;
       for (let j = 0; j <= valuesStr.length; j++) {
-        if (j === valuesStr.length || valuesStr.charCodeAt(j) === 124) { // |
+        if (j === valuesStr.length || valuesStr.charCodeAt(j) === 124) {
           const valueStr = this.fastTrim(valuesStr.slice(start, j));
           values.push(this.parseFieldValue(valueStr, fields?.[fi] ?? null, lineNumber));
           fi++;
@@ -425,8 +429,8 @@ export class RecordParser {
     const c0 = valueStr.charCodeAt(0);
     const cLast = valueStr.charCodeAt(valueStr.length - 1);
 
-    if (c0 === 91) { // [
-      if (cLast !== 93) { // ]
+    if (c0 === 91) {
+      if (cLast !== 93) {
         throw new MaxiError(
           `Malformed array: unmatched opening bracket`,
           MaxiErrorCode.ArraySyntaxError,
@@ -441,8 +445,10 @@ export class RecordParser {
 
     const typeExpr = fieldDef?.typeExpr ?? 'str';
 
-    // Fast paths for known types — avoid unnecessary detection
-    if (typeExpr === 'int') {
+    const baseTypeMatch = typeExpr.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
+    const baseType = baseTypeMatch ? baseTypeMatch[1] : typeExpr;
+
+    if (baseType === 'int') {
       const nk = this.detectNumberKind(valueStr);
       if (nk === 1) return parseInt(valueStr, 10);
       if (this._isStrict) {
@@ -466,7 +472,7 @@ export class RecordParser {
       return valueStr;
     }
 
-    if (typeExpr === 'bool') {
+    if (baseType === 'bool') {
       if (valueStr === '1' || valueStr === 'true') return true;
       if (valueStr === '0' || valueStr === 'false') return false;
       if (this._isStrict) {
@@ -483,25 +489,20 @@ export class RecordParser {
       return valueStr;
     }
 
-    // For explicitly typed str with no annotation, just return the string directly
-    // Only when fieldDef explicitly has typeExpr='str' (not the default fallback for untyped fields)
-    if (fieldDef?.typeExpr === 'str') {
+    if (fieldDef?.typeExpr != null && baseType === 'str') {
       return valueStr;
     }
 
-    // For enum types with string base, return the string directly (validation done later)
     if (typeExpr.startsWith('enum')) {
-      // Check if enum has a non-str base type like enum<int>
       const baseMatch = typeExpr.match(/^enum<(\w+)>/);
       if (!baseMatch || baseMatch[1] === 'str') {
         return valueStr;
       }
-      // For enum<int> etc, fall through to numeric coercion below
     }
 
     const annotation = fieldDef?.annotation;
 
-    if (!this._isStrict && typeExpr === 'bytes' && annotation === 'base64') {
+    if (!this._isStrict && baseType === 'bytes' && annotation === 'base64') {
       const s = valueStr;
       if (this.looksLikeBase64(s)) {
         const mod = s.length & 3;
@@ -510,7 +511,7 @@ export class RecordParser {
       return s;
     }
 
-    if (typeExpr === 'float') {
+    if (baseType === 'float') {
       const nk = this.detectNumberKind(valueStr);
       const fk = this.detectFloatKind(valueStr);
       if (fk || nk === 1 || nk === 2 || nk === 3) return parseFloat(valueStr);
@@ -528,7 +529,7 @@ export class RecordParser {
       return valueStr;
     }
 
-    if (typeExpr === 'decimal') {
+    if (baseType === 'decimal') {
       const nk = this.detectNumberKind(valueStr);
       if (nk === 3) return parseInt(valueStr.slice(0, -1), 10);
       if (nk === 1 || nk === 2) return parseFloat(valueStr);
@@ -546,7 +547,6 @@ export class RecordParser {
       return valueStr;
     }
 
-    // Untyped or str with annotation — try numeric coercion in lax mode
     if (!this._isStrict) {
       const fk = this.detectFloatKind(valueStr);
       if (fk) return parseFloat(valueStr);
@@ -561,12 +561,9 @@ export class RecordParser {
 
   /** @private */
   parseArray(arrayStr, fieldDef, lineNumber) {
-    // Remove brackets
     const content = arrayStr.slice(1, -1).trim();
     if (!content) return [];
 
-    // If schema says "int[]", "decimal[]", "bool[]", etc., coerce elements accordingly.
-    // If untyped, allow lax-mode numeric coercion by passing null (parseFieldValue handles fallback).
     const elemType = this.getArrayElementType(fieldDef?.typeExpr);
     const elemFieldDef = elemType ? { typeExpr: elemType } : null;
 
@@ -607,10 +604,11 @@ export class RecordParser {
     const content = mapStr.slice(1, -1).trim();
     if (!content) return {};
 
-    // Determine map value type from schema: map<...>
-    // If untyped map, allow lax-mode numeric coercion by passing null (parseFieldValue handles fallback).
     const mapValueType = this.getMapValueType(fieldDef?.typeExpr);
-    const valueFieldDef = mapValueType ? { typeExpr: mapValueType } : null;
+    const hasExplicitMapType = fieldDef?.typeExpr != null;
+    const valueFieldDef = mapValueType ? { typeExpr: mapValueType } : (hasExplicitMapType ? { typeExpr: 'str' } : null);
+    const mapKeyType = this.getMapKeyType(fieldDef?.typeExpr);
+    const keyFieldDef = mapKeyType ? { typeExpr: mapKeyType } : null;
 
     const map = {};
     let currentEntry = '';
@@ -629,7 +627,7 @@ export class RecordParser {
         if (char === '(' || char === '[' || char === '{') depth++;
         else if (char === ')' || char === ']' || char === '}') depth--;
         if (char === ',' && depth === 0) {
-          this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef);
+          this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef, keyFieldDef);
           currentEntry = '';
           continue;
         }
@@ -637,7 +635,7 @@ export class RecordParser {
       currentEntry += char;
     }
 
-    if (currentEntry.trim()) this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef);
+    if (currentEntry.trim()) this.parseMapEntry(currentEntry.trim(), map, lineNumber, valueFieldDef, keyFieldDef);
     return map;
   }
 
@@ -645,15 +643,12 @@ export class RecordParser {
   getMapValueType(typeExpr) {
     if (!typeExpr) return null;
     const t = typeExpr.trim();
-    // "map" (untyped)
     if (t === 'map') return null;
 
-    // map<...>
     const m = t.match(/^map\s*<\s*(.+)\s*>\s*$/);
     if (!m) return null;
 
     const inside = m[1];
-    // split top-level by comma
     let depth = 0;
     let inString = false;
     let cur = '';
@@ -676,14 +671,48 @@ export class RecordParser {
     }
     if (cur.trim()) parts.push(cur.trim());
 
-    // If one param: treat as value type. If two+: treat last as value type.
     if (parts.length === 1) return parts[0] || null;
     return parts[parts.length - 1] || null;
   }
 
   /** @private */
-  parseMapEntry(entryStr, map, lineNumber, valueFieldDef = null) {
-    // Find colon separator (not inside strings or nested structures)
+  getMapKeyType(typeExpr) {
+    if (!typeExpr) return null;
+    const t = typeExpr.trim();
+    if (t === 'map') return null;
+
+    const m = t.match(/^map\s*<\s*(.+)\s*>\s*$/);
+    if (!m) return null;
+
+    const inside = m[1];
+    let depth = 0;
+    let inString = false;
+    let cur = '';
+    const parts = [];
+
+    for (let i = 0; i < inside.length; i++) {
+      const ch = inside[i];
+
+      if (inString) {
+        if (ch === '"' && inside[i - 1] !== '\\') inString = false;
+        cur += ch; continue;
+      }
+      if (ch === '"') { inString = true; cur += ch; continue; }
+
+      if (ch === '<') depth++;
+      else if (ch === '>') depth = Math.max(0, depth - 1);
+
+      if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+
+    if (parts.length >= 2) return parts[0] || null;
+    return null;
+  }
+
+  /** @private */
+  parseMapEntry(entryStr, map, lineNumber, valueFieldDef = null, keyFieldDef = null) {
     let colonIndex = -1;
     let depth = 0;
     let inString = false;
@@ -716,9 +745,47 @@ export class RecordParser {
 
     const keyStr = entryStr.slice(0, colonIndex).trim();
     const valueStr = entryStr.slice(colonIndex + 1).trim();
-    const key = this.parseFieldValue(keyStr, { typeExpr: 'str' }, lineNumber);
+    const key = this.parseFieldValue(keyStr, keyFieldDef ?? { typeExpr: 'str' }, lineNumber);
+    if (keyFieldDef) {
+      this.validateInlineTypeConstraints(key, keyFieldDef.typeExpr, 'map key', lineNumber);
+    }
     const value = this.parseFieldValue(valueStr, valueFieldDef, lineNumber);
+    if (valueFieldDef) {
+      this.validateInlineTypeConstraints(value, valueFieldDef.typeExpr, 'map value', lineNumber);
+    }
     map[String(key)] = value;
+  }
+
+  /** @private */
+  validateInlineTypeConstraints(value, typeExpr, fieldName, lineNumber) {
+    if (!typeExpr) return;
+    const m = typeExpr.match(/^[a-zA-Z_][a-zA-Z0-9_]*\((.+)\)\s*$/);
+    if (!m) return;
+    const constraintStr = m[1];
+    const parts = constraintStr.split(',').map(p => p.trim()).filter(Boolean);
+    for (const part of parts) {
+      const cmp = part.match(/^(>=|>|<=|<)\s*(.+)$/);
+      if (!cmp) continue;
+      const [, operator, limitStr] = cmp;
+      const limit = parseFloat(limitStr);
+      if (isNaN(limit)) continue;
+      let actual;
+      if (typeof value === 'string') actual = value.length;
+      else if (typeof value === 'number') actual = value;
+      else continue;
+      let violated = false;
+      if (operator === '>=' && actual < limit) violated = true;
+      else if (operator === '>' && actual <= limit) violated = true;
+      else if (operator === '<=' && actual > limit) violated = true;
+      else if (operator === '<' && actual >= limit) violated = true;
+      if (violated) {
+        const msg = `${fieldName}: value ${actual} violates constraint ${operator}${limit}`;
+        if (this._isStrict) {
+          throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename: this._filename });
+        }
+        this.result.addWarning(msg, { code: MaxiErrorCode.ConstraintViolationError, line: lineNumber });
+      }
+    }
   }
 
   /** @private */
@@ -760,11 +827,9 @@ export class RecordParser {
     if (!typeExpr) return null;
     const t = typeExpr.trim();
 
-    // array element, e.g. "Order[]" -> "Order"
     const arrMatch = t.match(/^(.+)\[\]\s*$/);
     const base = arrMatch ? arrMatch[1].trim() : t;
 
-    // map value type, e.g. "map<User>" -> "User"
     if (/^map\s*</.test(base)) {
       const mapValueType = this.getMapValueType(base);
       const resolved = mapValueType ? mapValueType.trim() : null;

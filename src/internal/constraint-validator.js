@@ -32,7 +32,17 @@ function validateAnnotationTypeCompat(field, typeAlias, filename) {
   if (!field.annotation) return;
 
   const allowedTypes = ANNOTATION_TYPE_MAP[field.annotation];
-  if (!allowedTypes) return;
+  if (!allowedTypes) {
+    const baseType = getBaseTypeName(field.typeExpr);
+    if (baseType === 'bytes') {
+      throw new MaxiError(
+        `Unsupported binary format annotation '@${field.annotation}' on bytes field '${field.name}' in type '${typeAlias}'. Supported: @base64, @hex`,
+        MaxiErrorCode.UnsupportedBinaryFormatError,
+        { filename }
+      );
+    }
+    return;
+  }
 
   const baseType = getBaseTypeName(field.typeExpr);
   if (!baseType) return;

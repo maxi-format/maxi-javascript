@@ -176,7 +176,7 @@ export class SchemaParser {
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('@')) return null;
 
     const looksLikeAliasParen = /^[A-Za-z_][A-Za-z0-9_-]*\s*\(/.test(trimmed);
-    const looksLikeExplicitType = /^[A-Za-z_][A-Za-z0-9_-]*\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s*(<[^>]+>)?\s*\(/.test(trimmed);
+    const looksLikeExplicitType = /^[A-Za-z_][A-Za-z0-9_-]*\s*:\s*[A-Za-z_][A-Za-z0-9_-]*\s*(<[^>]+>)?\s*\(/.test(trimmed);
     const looksLikeInheritance = /^[A-Za-z_][A-Za-z0-9_-]*\s*<[^>]+>\s*\(/.test(trimmed);
 
     if (!looksLikeExplicitType && !looksLikeInheritance && looksLikeAliasParen) {
@@ -257,8 +257,8 @@ export class SchemaParser {
 
     if (parenDepth !== 0) {
       throw new MaxiError(
-        'Unclosed parenthesis in type definition',
-        MaxiErrorCode.InvalidSyntaxError,
+        'Unclosed parenthesis in type definition (possible malformed constraint)',
+        MaxiErrorCode.ConstraintSyntaxError,
         { line: startLine, filename: this.options.filename }
       );
     }
@@ -308,7 +308,7 @@ export class SchemaParser {
     const fieldsStr = trimmed.slice(openIdx + 1, closeIdx).trim();
 
     const headerMatch = header.match(
-      /^([A-Za-z_][A-Za-z0-9_-]*)(?::([A-Za-z][A-Za-z0-9_-]*))?(?:<\s*([^>]+?)\s*>)?\s*$/
+      /^([A-Za-z_][A-Za-z0-9_-]*)(?::([A-Za-z_][A-Za-z0-9_-]*))?(?:<\s*([^>]+?)\s*>)?\s*$/
     );
     if (!headerMatch) {
       throw new MaxiError(
@@ -515,6 +515,14 @@ export class SchemaParser {
     if (eqIdxName !== -1) {
       defaultValue = namePart.slice(eqIdxName + 1).trim();
       namePart = namePart.slice(0, eqIdxName).trim();
+      // After extracting default value, try again to extract constraints from name
+      if (constraints.length === 0) {
+        const trailing = this.extractTrailingGroup(namePart, '(', ')');
+        if (trailing) {
+          constraints = this.parseConstraints(trailing.inner, lineNumber);
+          namePart = trailing.before.trim();
+        }
+      }
     } else if (restPart) {
       const eqIdxRest = this.findTopLevelChar(restPart, '=');
       if (eqIdxRest !== -1) {
@@ -909,11 +917,14 @@ export class SchemaParser {
     if (mapMatch) {
       const inside = mapMatch[1];
       let depth = 0;
+      let parenDepth = 0;
       let lastComma = -1;
       for (let i = 0; i < inside.length; i++) {
-        if (inside[i] === '<') depth++;
-        else if (inside[i] === '>') depth--;
-        else if (inside[i] === ',' && depth === 0) lastComma = i;
+        if (inside[i] === '(') parenDepth++;
+        else if (inside[i] === ')') parenDepth = Math.max(0, parenDepth - 1);
+        else if (parenDepth === 0 && inside[i] === '<') depth++;
+        else if (parenDepth === 0 && inside[i] === '>') depth--;
+        else if (inside[i] === ',' && depth === 0 && parenDepth === 0) lastComma = i;
       }
       const valueType = lastComma >= 0 ? inside.slice(lastComma + 1).trim() : inside.trim();
       return this.extractReferencedType(valueType);

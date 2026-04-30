@@ -107,6 +107,11 @@ export class MaxiTypeDef {
     this._ensureCache();
     return this._idFieldIndex >= 0 ? this.fields[this._idFieldIndex] : null;
   }
+
+  /** @returns {string | null} Name of the identifier field */
+  get identifierField() {
+    return this.getIdField()?.name ?? null;
+  }
 }
 
 /**
@@ -133,6 +138,18 @@ export class MaxiFieldDef {
 
   /** @returns {boolean} */
   isId() { return this.constraints?.some(c => c.type === 'id') ?? false; }
+
+  /** @returns {string[] | null} Parsed enum values if this field is an enum type */
+  get enumValues() {
+    if (!this.typeExpr?.startsWith('enum')) return null;
+    const m = this.typeExpr.match(/^enum(?:<\w+>)?\[([^\]]*)\]$/);
+    if (!m) return null;
+    return m[1].split(',').map(v => {
+      const t = v.trim();
+      if (t.startsWith('"') && t.endsWith('"')) return t.slice(1, -1);
+      return t;
+    }).filter(Boolean);
+  }
 }
 
 export class MaxiRecord {
