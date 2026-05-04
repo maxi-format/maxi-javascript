@@ -48,7 +48,6 @@ export class MaxiStreamResult {
  */
 export async function streamMaxi(input, options = {}) {
   const result = new MaxiParseResult();
-  result.schema.mode = options.mode ?? 'lax';
 
   const { schemaSection, recordsSection } = splitSections(input);
 

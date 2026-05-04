@@ -46,14 +46,13 @@ O(100|1|99.99)`;
 });
 
 test('references: unresolved reference in strict mode throws E009', async () => {
-  const input = `@mode:strict
-U:User(id:int|name)
+  const input = `U:User(id:int|name)
 O:Order(id:int|user:U|total:decimal)
 ###
 O(100|999|99.99)`;
 
   await assert.rejects(
-    () => parseMaxi(input),
+    () => parseMaxi(input, { allowForwardReferences: false }),
     (err) => err instanceof MaxiError && err.code === MaxiErrorCode.UnresolvedReferenceError
   );
 });
@@ -89,11 +88,8 @@ U(1|Julie)`;
   assert.ok(res._objectRegistry.get('U').has('1'));
 });
 
-test('references: forward references in strict mode - unresolved triggers error', async () => {
-  // In strict mode, if a forward ref ultimately resolves, it should be OK
-  // because we resolve after ALL records are loaded
-  const input = `@mode:strict
-U:User(id:int|name)
+test('references: forward references resolve when allowForwardReferences is true', async () => {
+  const input = `U:User(id:int|name)
 O:Order(id:int|user:U|total:decimal)
 ###
 O(100|1|99.99)

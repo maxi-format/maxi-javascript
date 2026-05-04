@@ -104,10 +104,6 @@ export class SchemaParser {
         this.parseVersionDirective(value, lineNumber);
         break;
 
-      case 'mode':
-        this.parseModeDirective(value, lineNumber);
-        break;
-
       case 'schema':
         await this.parseSchemaDirective(value, lineNumber);
         break;
@@ -139,18 +135,6 @@ export class SchemaParser {
     }
 
     this.result.schema.version = value;
-  }
-
-  /** @private */
-  parseModeDirective(value, lineNumber) {
-    if (value !== 'strict' && value !== 'lax') {
-      throw new MaxiError(
-        `Invalid mode: ${value}. Must be 'strict' or 'lax'`,
-        MaxiErrorCode.InvalidSyntaxError,
-        { line: lineNumber, filename: this.options.filename }
-      );
-    }
-    this.result.schema.mode = value;
   }
 
   /** @private */
@@ -319,6 +303,14 @@ export class SchemaParser {
     }
 
     const [, alias, typeName, parentsStr] = headerMatch;
+
+    if (typeName && !/^[a-zA-Z]/.test(typeName)) {
+      throw new MaxiError(
+        `Invalid type name '${typeName}': type names must start with a letter [a-zA-Z]`,
+        MaxiErrorCode.UnknownTypeError,
+        { line: lineNumber, filename: this.options.filename }
+      );
+    }
 
     if (this.localAliases.has(alias)) {
       throw new MaxiError(

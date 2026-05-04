@@ -93,9 +93,10 @@ export function buildObjectRegistry(result) {
  * @param {import('../core/types.js').MaxiParseResult} result
  * @param {Map<string, Map<string, object>>} registry
  * @param {string} [filename]
+ * @param {object} [options]
  */
-export function validateReferences(result, registry, filename) {
-  const isStrict = result.schema.mode === 'strict';
+export function validateReferences(result, registry, filename, options = {}) {
+  const allowForwardReferences = options.allowForwardReferences ?? true;
 
   for (const record of result.records) {
     const typeDef = result.schema.getType(record.alias);
@@ -116,7 +117,7 @@ export function validateReferences(result, registry, filename) {
       if (!typeRegistry || !typeRegistry.has(idKey)) {
         const msg = `Unresolved reference: field '${field.name}' in '${record.alias}' references ${refAlias} id '${value}', but no such object found`;
 
-        if (isStrict) {
+        if (!allowForwardReferences) {
           throw new MaxiError(
             msg,
             MaxiErrorCode.UnresolvedReferenceError,

@@ -91,7 +91,7 @@ test('dumpMaxi: round-trip a parse-result-like object', () => {
   const parseResult = {
     schema: {
       version: '1.0.0',
-      mode: 'lax',
+
       imports: [],
       types: new Map([
         ['U', {
@@ -207,7 +207,7 @@ test('dumpMaxi: booleans dump as 1/0 (§6.1)', () => {
 
 test('dumpMaxi: round-trip booleans as 1/0 (§6.1)', () => {
   const parseResult = {
-    schema: { version: '1.0.0', mode: 'lax', imports: [], types: new Map() },
+    schema: { version: '1.0.0', imports: [], types: new Map() },
     records: [{ alias: 'T', values: [true, false] }],
   };
   const maxi = dumpMaxi(parseResult);

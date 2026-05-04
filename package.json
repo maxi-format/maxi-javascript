@@ -1,6 +1,6 @@
 {
   "name": "maxi",
-  "version": "1.0.0-draft",
+  "version": "0.1.0",
   "description": "JavaScript library to parse and dump MAXI schema.",
   "type": "module",
   "main": "index.js",
