@@ -17,8 +17,14 @@ export class RecordParser {
     this.options = options;
     /** @type {Map<string, Set<unknown>>} */
     this.seenIds = new Map();
-    this._isStrict = result.schema.mode === 'strict';
     this._filename = options.filename;
+
+    this._allowAdditionalFields = options.allowAdditionalFields ?? 'ignore';
+    this._allowMissingFields = options.allowMissingFields ?? 'null';
+    this._allowTypeCoercion = options.allowTypeCoercion ?? 'coerce';
+    this._allowConstraintViolations = options.allowConstraintViolations ?? 'warning';
+    this._allowForwardReferences = options.allowForwardReferences ?? true;
+    this._allowUnknownTypes = options.allowUnknownTypes ?? 'warning';
   }
 
   /**
@@ -184,14 +190,16 @@ export class RecordParser {
         { line: lineNumber, filename: this._filename }
       );
 
-      if (this._isStrict) {
+      if (this._allowUnknownTypes === 'error') {
         throw error;
       }
 
-      this.result.addWarning(error.message, {
-        code: error.code,
-        line: lineNumber
-      });
+      if (this._allowUnknownTypes === 'warning') {
+        this.result.addWarning(error.message, {
+          code: error.code,
+          line: lineNumber
+        });
+      }
 
       const values = this.parseFieldValues(valuesStr, null, lineNumber);
       return new MaxiRecord({ alias, values, lineNumber });
@@ -201,7 +209,7 @@ export class RecordParser {
 
     let values = this.parseFieldValues(valuesStr, typeDef, lineNumber);
 
-    if (!this._isStrict) {
+    if (this._allowAdditionalFields !== 'error') {
       const typeFieldIndex = typeDef.fields.findIndex(f => f.name === 'type');
       if (typeFieldIndex !== -1 && values.length === typeDef.fields.length - 1) {
         const typeFieldDef = typeDef.fields[typeFieldIndex];
@@ -221,7 +229,7 @@ export class RecordParser {
       }
     }
 
-    if (this._isStrict) {
+    if (this._allowMissingFields === 'error') {
       if (values.length < typeDef.fields.length) {
         for (let i = values.length; i < typeDef.fields.length; i++) {
           const field = typeDef.fields[i];
@@ -233,11 +241,20 @@ export class RecordParser {
             );
           }
         }
-      } else if (values.length > typeDef.fields.length) {
+      }
+    }
+
+    if (values.length > typeDef.fields.length) {
+      if (this._allowAdditionalFields === 'error') {
         throw new MaxiError(
           `Record '${alias}' has ${values.length} values but type defines ${typeDef.fields.length} fields`,
           MaxiErrorCode.SchemaMismatchError,
           { line: lineNumber, filename: this._filename }
+        );
+      } else if (this._allowAdditionalFields === 'warning') {
+        this.result.addWarning(
+          `Record '${alias}' has ${values.length} values but type defines ${typeDef.fields.length} fields`,
+          { code: MaxiErrorCode.SchemaMismatchError, line: lineNumber }
         );
       }
     }
@@ -255,7 +272,7 @@ export class RecordParser {
             MaxiErrorCode.MissingRequiredFieldError,
             { line: lineNumber, filename: this._filename }
           );
-          if (this._isStrict) throw error;
+          if (this._allowMissingFields === 'error') throw error;
           this.result.addWarning(error.message, { code: error.code, line: lineNumber });
         }
         value = null;
@@ -274,7 +291,7 @@ export class RecordParser {
           { line: lineNumber, filename: this._filename }
         );
 
-        if (this._isStrict) {
+        if (this._allowMissingFields === 'error') {
           throw error;
         }
         this.result.addWarning(error.message, { code: error.code, line: lineNumber });
@@ -291,7 +308,7 @@ export class RecordParser {
           const strValue = String(value);
           if (!enumVals.includes(strValue)) {
             const msg = `Value '${strValue}' not in enum [${enumVals.join(',')}] for field '${typeDef.fields[i].name}'`;
-            if (this._isStrict) {
+            if (this._allowConstraintViolations === 'error') {
               throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename: this._filename });
             }
             this.result.addWarning(msg, { code: MaxiErrorCode.ConstraintViolationError, line: lineNumber });
@@ -301,7 +318,7 @@ export class RecordParser {
     }
 
     if (typeDef._hasRuntimeConstraints) {
-      validateRecordConstraints(finalValues, typeDef, this._isStrict, this.result, lineNumber, this._filename);
+      validateRecordConstraints(finalValues, typeDef, this._allowConstraintViolations === 'error', this.result, lineNumber, this._filename);
     }
 
     const idFieldIndex = typeDef._idFieldIndex;
@@ -316,7 +333,7 @@ export class RecordParser {
         const idKey = String(idValue);
         if (seen.has(idKey)) {
           const msg = `Duplicate identifier '${idValue}' for type '${alias}'`;
-          if (this._isStrict) {
+          if (this._allowConstraintViolations === 'error') {
             throw new MaxiError(msg, MaxiErrorCode.DuplicateIdentifierError, { line: lineNumber, filename: this._filename });
           }
           this.result.addWarning(msg, { code: MaxiErrorCode.DuplicateIdentifierError, line: lineNumber });
@@ -451,7 +468,7 @@ export class RecordParser {
     if (baseType === 'int') {
       const nk = this.detectNumberKind(valueStr);
       if (nk === 1) return parseInt(valueStr, 10);
-      if (this._isStrict) {
+      if (this._allowTypeCoercion === 'error') {
         throw new MaxiError(
           `Type mismatch: field expects int, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
@@ -475,17 +492,19 @@ export class RecordParser {
     if (baseType === 'bool') {
       if (valueStr === '1' || valueStr === 'true') return true;
       if (valueStr === '0' || valueStr === 'false') return false;
-      if (this._isStrict) {
+      if (this._allowTypeCoercion === 'error') {
         throw new MaxiError(
           `Type mismatch: field expects bool, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
           { line: lineNumber, filename: this._filename }
         );
       }
-      this.result.addWarning(
-        `Type coercion: value '${valueStr}' is not a valid bool`,
-        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
-      );
+      if (this._allowTypeCoercion === 'warning') {
+        this.result.addWarning(
+          `Type coercion: value '${valueStr}' is not a valid bool`,
+          { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+        );
+      }
       return valueStr;
     }
 
@@ -495,14 +514,16 @@ export class RecordParser {
 
     if (typeExpr.startsWith('enum')) {
       const baseMatch = typeExpr.match(/^enum<(\w+)>/);
-      if (!baseMatch || baseMatch[1] === 'str') {
-        return valueStr;
+      if (baseMatch && baseMatch[1] === 'int') {
+        const n = parseInt(valueStr, 10);
+        return isNaN(n) ? valueStr : n;
       }
+      return valueStr;
     }
 
     const annotation = fieldDef?.annotation;
 
-    if (!this._isStrict && baseType === 'bytes' && annotation === 'base64') {
+    if (this._allowTypeCoercion !== 'error' && baseType === 'bytes' && annotation === 'base64') {
       const s = valueStr;
       if (this.looksLikeBase64(s)) {
         const mod = s.length & 3;
@@ -515,17 +536,19 @@ export class RecordParser {
       const nk = this.detectNumberKind(valueStr);
       const fk = this.detectFloatKind(valueStr);
       if (fk || nk === 1 || nk === 2 || nk === 3) return parseFloat(valueStr);
-      if (this._isStrict) {
+      if (this._allowTypeCoercion === 'error') {
         throw new MaxiError(
           `Type mismatch: field expects float, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
           { line: lineNumber, filename: this._filename }
         );
       }
-      this.result.addWarning(
-        `Type coercion: value '${valueStr}' is not a valid float`,
-        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
-      );
+      if (this._allowTypeCoercion === 'warning') {
+        this.result.addWarning(
+          `Type coercion: value '${valueStr}' is not a valid float`,
+          { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+        );
+      }
       return valueStr;
     }
 
@@ -533,21 +556,23 @@ export class RecordParser {
       const nk = this.detectNumberKind(valueStr);
       if (nk === 3) return parseInt(valueStr.slice(0, -1), 10);
       if (nk === 1 || nk === 2) return parseFloat(valueStr);
-      if (this._isStrict) {
+      if (this._allowTypeCoercion === 'error') {
         throw new MaxiError(
           `Type mismatch: field expects decimal, got '${valueStr}'`,
           MaxiErrorCode.TypeMismatchError,
           { line: lineNumber, filename: this._filename }
         );
       }
-      this.result.addWarning(
-        `Type coercion: value '${valueStr}' is not a valid decimal`,
-        { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
-      );
+      if (this._allowTypeCoercion === 'warning') {
+        this.result.addWarning(
+          `Type coercion: value '${valueStr}' is not a valid decimal`,
+          { code: MaxiErrorCode.TypeMismatchError, line: lineNumber }
+        );
+      }
       return valueStr;
     }
 
-    if (!this._isStrict) {
+    if (this._allowTypeCoercion !== 'error') {
       const fk = this.detectFloatKind(valueStr);
       if (fk) return parseFloat(valueStr);
       const nk = this.detectNumberKind(valueStr);
@@ -780,7 +805,7 @@ export class RecordParser {
       else if (operator === '<' && actual >= limit) violated = true;
       if (violated) {
         const msg = `${fieldName}: value ${actual} violates constraint ${operator}${limit}`;
-        if (this._isStrict) {
+        if (this._allowConstraintViolations === 'error') {
           throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename: this._filename });
         }
         this.result.addWarning(msg, { code: MaxiErrorCode.ConstraintViolationError, line: lineNumber });
@@ -796,17 +821,19 @@ export class RecordParser {
 
     const typeDef = this.result.schema.getType(typeAlias);
     if (!typeDef) {
-      if (this.result.schema.mode === 'strict') {
+      if (this._allowUnknownTypes === 'error') {
         throw new MaxiError(
           `Unknown type alias '${typeAlias}' for inline object`,
           MaxiErrorCode.UnknownTypeError,
           { line: lineNumber, filename: this.options.filename }
         );
       }
-      this.result.addWarning(`Unknown type alias '${typeAlias}' for inline object`, {
-        code: MaxiErrorCode.UnknownTypeError,
-        line: lineNumber
-      });
+      if (this._allowUnknownTypes === 'warning') {
+        this.result.addWarning(`Unknown type alias '${typeAlias}' for inline object`, {
+          code: MaxiErrorCode.UnknownTypeError,
+          line: lineNumber
+        });
+      }
       return { values: this.parseFieldValues(innerValuesStr, null, lineNumber) };
     }
 

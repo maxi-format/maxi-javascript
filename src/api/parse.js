@@ -7,7 +7,12 @@ const NON_REF_TYPES = new Set(['str', 'int', 'decimal', 'float', 'bool', 'bytes'
 
 /**
  * @typedef {Object} MaxiParseOptions
- * @property {'strict'|'lax'} [mode='lax']
+ * @property {'ignore'|'warning'|'error'} [allowAdditionalFields='ignore']
+ * @property {'null'|'warning'|'error'} [allowMissingFields='null']
+ * @property {'coerce'|'warning'|'error'} [allowTypeCoercion='coerce']
+ * @property {'warning'|'error'} [allowConstraintViolations='warning']
+ * @property {boolean} [allowForwardReferences=true]
+ * @property {'ignore'|'warning'|'error'} [allowUnknownTypes='warning']
  * @property {string} [filename]
  * @property {(pathOrUrl: string) => Promise<string>|string} [loadSchema]
  */
@@ -20,7 +25,6 @@ const NON_REF_TYPES = new Set(['str', 'int', 'decimal', 'float', 'bool', 'bytes'
  */
 export async function parseMaxi(input, options = {}) {
   const result = new MaxiParseResult();
-  result.schema.mode = options.mode ?? 'lax';
 
   const { schemaSection, recordsSection } = splitSections(input);
 
@@ -55,7 +59,7 @@ export async function parseMaxi(input, options = {}) {
         configurable: true,
         writable: true,
       });
-      validateReferences(result, registry, options.filename);
+      validateReferences(result, registry, options.filename, options);
     }
   }
 

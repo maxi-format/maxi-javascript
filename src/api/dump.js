@@ -3,7 +3,6 @@
  * @property {boolean} [multiline=false]
  * @property {boolean} [includeTypes=true]
  * @property {string} [version]
- * @property {'strict'|'lax'} [mode]
  * @property {string} [schemaFile]
  * @property {Map<string, MaxiDumpTypeInput> | MaxiDumpTypeInput[]} [types]
  * @property {string} [defaultAlias]
@@ -21,7 +20,6 @@
 /**
  * @typedef {Object} MaxiDumpSchemaInput
  * @property {string} [version]
- * @property {'strict'|'lax'} [mode]
  * @property {string[]} [imports]
  * @property {Map<string, MaxiDumpTypeInput> | MaxiDumpTypeInput[]} [types]
  */
@@ -61,7 +59,6 @@ export function dumpMaxi(data, options = {}) {
   const input = {
     schema: {
       version: options.version,
-      mode: options.mode,
       imports: options.schemaFile ? [options.schemaFile] : [],
       types: options.types,
     },
@@ -83,9 +80,6 @@ function dumpMaxiFromParseResult(result, options) {
 
   if (result?.schema?.version && result.schema.version !== '1.0.0') {
     out.push(`@version:${result.schema.version}`);
-  }
-  if (result?.schema?.mode === 'strict') {
-    out.push(`@mode:strict`);
   }
   for (const imp of result?.schema?.imports ?? []) {
     out.push(`@schema:${imp}`);
@@ -125,7 +119,6 @@ function dumpMaxiFromObjects(input, options) {
   resolveInheritanceForDump(types);
 
   if (schema.version && schema.version !== '1.0.0') out.push(`@version:${schema.version}`);
-  if (schema.mode === 'strict') out.push(`@mode:strict`);
   for (const imp of schema.imports ?? []) out.push(`@schema:${imp}`);
 
   if (includeTypes && types.size > 0) {

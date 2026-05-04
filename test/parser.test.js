@@ -201,7 +201,7 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
     const meta = JSON.parse(testJsonRaw);
     const expected = JSON.parse(expectedRaw);
 
-    const mode = meta.mode ?? 'lax';
+    const parserOptions = meta.parserOptions ?? {};
 
     const loadSchema = async (pathOrUrl) => {
       const resolved = path.isAbsolute(pathOrUrl)
@@ -213,7 +213,7 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
     if (expected.success === false) {
       if (meta.parser_dependent) continue;
       await assert.rejects(
-        () => parseMaxi(input, { mode, filename: `testdata/${id}/in.maxi`, loadSchema }),
+        () => parseMaxi(input, { ...parserOptions, filename: `testdata/${id}/in.maxi`, loadSchema }),
         (err) => {
           if (expected.error_code) {
             assert.equal(
@@ -229,7 +229,7 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
     }
 
     const res = await parseMaxi(input, {
-      mode,
+      ...parserOptions,
       filename: `testdata/${id}/in.maxi`,
       loadSchema,
     });

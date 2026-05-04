@@ -56,12 +56,11 @@ U(1)`;
 });
 
 test('stream: record validation errors throw during iteration', async () => {
-  const input = `@mode:strict
-U:User(id:int|name)
+  const input = `U:User(id:int|name)
 ###
 U(hello|Julie)`;
 
-  const stream = await streamMaxi(input);
+  const stream = await streamMaxi(input, { allowTypeCoercion: 'error' });
 
   await assert.rejects(
     async () => {
@@ -159,13 +158,12 @@ U(2|Matt)`;
   assert.deepEqual(records[0].values, [1, 'Julie']);
 });
 
-test('stream: strict mode unknown type throws during iteration', async () => {
-  const input = `@mode:strict
-U:User(id:int|name)
+test('stream: unknown type throws during iteration with allowUnknownTypes error', async () => {
+  const input = `U:User(id:int|name)
 ###
 X(1|oops)`;
 
-  const stream = await streamMaxi(input);
+  const stream = await streamMaxi(input, { allowUnknownTypes: 'error' });
 
   await assert.rejects(
     async () => {
@@ -178,13 +176,12 @@ X(1|oops)`;
 });
 
 test('stream: duplicate id detection across streamed records', async () => {
-  const input = `@mode:strict
-U:User(id:int(id)|name)
+  const input = `U:User(id:int(id)|name)
 ###
 U(1|Alice)
 U(1|Duplicate)`;
 
-  const stream = await streamMaxi(input);
+  const stream = await streamMaxi(input, { allowConstraintViolations: 'error' });
 
   await assert.rejects(
     async () => {

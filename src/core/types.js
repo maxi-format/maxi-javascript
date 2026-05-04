@@ -2,14 +2,10 @@
  * Core MAXI type definitions (IR - Intermediate Representation).
  */
 
-/** @typedef {'strict'|'lax'} MaxiMode */
-
 export class MaxiSchema {
   constructor() {
     /** @type {string} */
     this.version = '1.0.0';
-    /** @type {MaxiMode} */
-    this.mode = 'lax';
     /** @type {string[]} */
     this.imports = [];
     /** @type {Map<string, MaxiTypeDef>} */
