@@ -2,7 +2,7 @@
 
 JavaScript library for parsing and dumping **MAXI schema + records**.
 
-Version: `1.0.0-draft`
+Version: `0.1.0`
 
 ## Install
 
