@@ -46,7 +46,7 @@ U(1|Julie|julie@example.com)          ← records (data section)
 O(100|1|49.99)
 ```
 
-- Everything **above** `###` is the schema section (type defs, directives like `@version`, `@mode`, `@schema`).
+- Everything **above** `###` is the schema section (type defs, directives like `@version`, `@schema`).
 - Everything **below** `###` is the records section.
 - If no `###` is present, the parser auto-detects whether the input is schema-only or records-only.
 
@@ -63,12 +63,12 @@ const result = await parseMaxi(input, options);
 Parses the full input at once. Returns a `MaxiParseResult` containing:
 - `result.schema` — types, directives, imports
 - `result.records` — array of `{ alias, values }` (positional values, schema-typed)
-- `result.warnings` — recoverable issues found during lax-mode parsing
+- `result.warnings` — recoverable issues found during parsing (type coercions, unknown types, constraint violations, etc.)
 
 ### What the parser does internally
 
 1. **Split sections** at `###`
-2. **Parse schema section** — type definitions, `@version`, `@mode`, `@schema` imports (loaded via `options.loadSchema`)
+2. **Parse schema section** — type definitions, `@version`, `@schema` imports (loaded via `options.loadSchema`)
 3. **Parse records section** — each record is matched to its type def; values are coerced to the declared type (`int`, `bool`, `decimal`, etc.)
 4. **Build object registry** — if any field references another type, an internal `_objectRegistry` (alias → id → object) is built for reference validation
 5. **Validate references** — unresolved references emit a warning (lax) or throw (strict)
@@ -131,7 +131,6 @@ for await (const record of stream.records()) {
 schema.getType('U')         // → MaxiTypeDef | undefined
 schema.hasType('U')         // → boolean
 schema.types                // → Map<alias, MaxiTypeDef>
-schema.mode                 // → 'lax' | 'strict'
 schema.version              // → string
 schema.imports              // → string[]
 ```
@@ -295,7 +294,7 @@ Forward references work naturally because reference resolution is a **second pas
 
 ### Unresolved references
 
-If a referenced id is not found among the hydrated instances, the field **stays as the original scalar value**. A warning is also emitted by the underlying `parseMaxi` call (in lax mode).
+If a referenced id is not found among the hydrated instances, the field **stays as the original scalar value**. A warning is also emitted by the underlying `parseMaxi` call.
 
 ---
 
@@ -317,7 +316,12 @@ The first strategy is verified by checking that the first expected field actuall
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `mode` | `'lax'\|'strict'` | `'lax'` | `lax`: accumulates warnings for recoverable errors. `strict`: throws on any deviation. |
+| `allowAdditionalFields` | `'ignore'\|'warning'\|'error'` | `'ignore'` | Extra fields beyond schema definition |
+| `allowMissingFields` | `'null'\|'warning'\|'error'` | `'null'` | Missing required fields — fill with null or reject |
+| `allowTypeCoercion` | `'coerce'\|'warning'\|'error'` | `'coerce'` | Type mismatches — coerce or reject |
+| `allowConstraintViolations` | `'warning'\|'error'` | `'warning'` | Value violates a schema constraint |
+| `allowForwardReferences` | `boolean` | `true` | Allow references to records not yet seen |
+| `allowUnknownTypes` | `'ignore'\|'warning'\|'error'` | `'warning'` | Records with an unrecognised type alias |
 | `filename` | `string` | — | Used in error/warning messages for better diagnostics |
 | `loadSchema` | `(path) => string\|Promise<string>` | — | Resolver for `@schema:` import directives |
 
@@ -495,18 +499,19 @@ const { objects } = await parseMaxiAs(input, { U: User }, {
 
 ---
 
-### 8. Strict mode — throws on schema violations
+### 8. Strict-style validation — throws on schema violations
+
+Use `allowAdditionalFields: 'error'` to reject records with extra fields:
 
 ```js
 const input = `
-@mode:strict
 U:User(id:int|name)
 ###
 U(1|Julie|extra-field-not-in-schema)
 `.trim();
 
 // Throws MaxiError with code SchemaMismatchError
-await parseMaxiAs(input, { U: User }, { mode: 'strict' });
+await parseMaxiAs(input, { U: User }, { allowAdditionalFields: 'error' });
 ```
 
 ---

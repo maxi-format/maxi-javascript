@@ -178,8 +178,8 @@ test('dumpMaxi: with referenced and inline objects', () => {
     'A:Address(id|street|city)',
     'O:Order(orderId:int|total:decimal)',
     '###',
-    'C(C1|"John Doe"|A1|[(101|49.99),(102|150)])',
-    'A(A1|"123 Main St"|Anytown)',
+    'C(C1|John Doe|A1|[(101|49.99),(102|150)])',
+    'A(A1|123 Main St|Anytown)',
   ].join('\n');
 
   // Normalizing output for comparison as record order isn't guaranteed
@@ -280,7 +280,7 @@ test('dumpMaxi: inline objects when collectReferences=false (§6.3)', () => {
 
   const maxi = dumpMaxi(data, { defaultAlias: 'U', types, collectReferences: false });
   // Should emit inline (A1|123 Main|NYC) instead of just the reference A1
-  assert.ok(maxi.includes('(A1|"123 Main"|NYC)'), `Expected inline object, got: ${maxi}`);
+  assert.ok(maxi.includes('(A1|123 Main|NYC)'), `Expected inline object, got: ${maxi}`);
   // Should NOT have a separate A(...) data record after ###
   const dataPart = maxi.split('###')[1] || '';
   assert.ok(!dataPart.includes('A('), `Should not have separate A record in data, got: ${maxi}`);

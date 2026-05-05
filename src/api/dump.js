@@ -508,7 +508,8 @@ function dumpMapKey(k) {
  * @returns {boolean}
  */
 function needsQuoting(str) {
-  return /[|()\[\]{}~,:]|\s/.test(str);
+  if (str === '' || str === '~') return true;
+  return /[|()\[\]{}~,:\\"]/.test(str) || /^\s|\s$/.test(str);
 }
 
 /**

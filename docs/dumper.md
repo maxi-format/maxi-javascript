@@ -29,7 +29,7 @@ const maxi = dumpMaxi(data, options);
 
 `dumpMaxi` accepts data in several formats and optional configuration through `options`. It emits a MAXI string that may contain:
 
-- Directives (`@version`, `@mode`, `@schema`)
+- Directives (`@version`, `@schema`)
 - Type definitions (schema section)
 - A `###` separator
 - Records (data section)
@@ -262,7 +262,6 @@ This resolution happens once at the start of `dumpMaxiFromObjects` via `resolveI
 | `includeTypes` | `boolean` | `true` | Whether to emit type definitions above `###` |
 | `schemaFile` | `string` | — | Emit `@schema:<path>` import directive |
 | `version` | `string` | — | Emit `@version:<x>` if not `1.0.0` |
-| `mode` | `'strict'\|'lax'` | — | Emit `@mode:strict` when `strict` |
 | `multiline` | `boolean` | `false` | Pretty-print type defs and records across multiple lines |
 | `collectReferences` | `boolean` | `true` | Promote nested typed objects with an `id` into top-level records |
 
