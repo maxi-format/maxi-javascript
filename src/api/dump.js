@@ -503,13 +503,16 @@ function dumpMapKey(k) {
   return needsQuoting(k) ? `"${escapeString(k)}"` : k;
 }
 
+const _NEEDS_QUOTING_RE = /[|()\[\]{}~,:\\"]/;
+const _LEAD_TRAIL_SPACE_RE = /^\s|\s$/;
+
 /**
  * @param {string} str
  * @returns {boolean}
  */
 function needsQuoting(str) {
   if (str === '' || str === '~') return true;
-  return /[|()\[\]{}~,:\\"]/.test(str) || /^\s|\s$/.test(str);
+  return _NEEDS_QUOTING_RE.test(str) || _LEAD_TRAIL_SPACE_RE.test(str);
 }
 
 /**

@@ -358,6 +358,75 @@ export class RecordParser {
 
     if (isSimple) {
       const fields = typeDef?.fields;
+      if (fields && !valuesStr.includes('~') && typeDef._fieldKinds && this._allowTypeCoercion !== 'error') {
+        const values = [];
+        let start = 0;
+        let fi = 0;
+        const fieldKinds = typeDef._fieldKinds;
+        let useFastPath = true;
+        for (let j = 0; j <= valuesStr.length; j++) {
+          if (j === valuesStr.length || valuesStr.charCodeAt(j) === 124) {
+            let raw = valuesStr.slice(start, j);
+            const fc = raw.charCodeAt(0);
+            if (fc === 32 || fc === 9) {
+              let s = 0;
+              while (s < raw.length && (raw.charCodeAt(s) === 32 || raw.charCodeAt(s) === 9)) s++;
+              raw = raw.slice(s);
+            }
+            if (raw.length > 0 && (raw.charCodeAt(raw.length - 1) === 32 || raw.charCodeAt(raw.length - 1) === 9)) {
+              let e = raw.length;
+              while (e > 0 && (raw.charCodeAt(e - 1) === 32 || raw.charCodeAt(e - 1) === 9)) e--;
+              raw = raw.slice(0, e);
+            }
+            const kind = fi < fieldKinds.length ? fieldKinds[fi] : 0;
+            let value;
+            if (raw === '') {
+              const dv = fields[fi]?.defaultValue;
+              value = dv !== undefined ? dv : null;
+            } else if (kind === 1) {
+              const c0 = raw.charCodeAt(0);
+              if ((c0 >= 48 && c0 <= 57) || (c0 === 45 && raw.length > 1)) {
+                value = parseInt(raw, 10);
+                if (String(value) !== raw) { useFastPath = false; break; }
+              } else {
+                useFastPath = false; break;
+              }
+            } else if (kind === 2) {
+              if (raw === '1' || raw === 'true') value = true;
+              else if (raw === '0' || raw === 'false') value = false;
+              else { useFastPath = false; break; }
+            } else if (kind === 3) {
+              value = raw;
+            } else if (kind === 4) {
+              value = raw;
+            } else if (kind === 5) {
+              const c0 = raw.charCodeAt(0);
+              if ((c0 >= 48 && c0 <= 57) || (c0 === 45 && raw.length > 1)) {
+                const iv = parseInt(raw, 10);
+                if (String(iv) === raw) {
+                  value = iv;
+                } else {
+                  const fv = parseFloat(raw);
+                  if (!isNaN(fv) && String(fv) === raw) {
+                    value = fv;
+                  } else {
+                    value = raw;
+                  }
+                }
+              } else {
+                value = raw;
+              }
+            } else {
+              useFastPath = false; break;
+            }
+            values.push(value);
+            fi++;
+            start = j + 1;
+          }
+        }
+        if (useFastPath) return values;
+      }
+
       const values = [];
       let start = 0;
       let fi = 0;
@@ -462,8 +531,14 @@ export class RecordParser {
 
     const typeExpr = fieldDef?.typeExpr ?? 'str';
 
-    const baseTypeMatch = typeExpr.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
-    const baseType = baseTypeMatch ? baseTypeMatch[1] : typeExpr;
+    // Fast check: extract base type without regex for common cases
+    let baseType;
+    const parenIdx = typeExpr.indexOf('(');
+    if (parenIdx === -1) {
+      baseType = typeExpr;
+    } else {
+      baseType = typeExpr.slice(0, parenIdx);
+    }
 
     if (baseType === 'int') {
       const nk = this.detectNumberKind(valueStr);

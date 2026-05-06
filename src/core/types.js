@@ -96,6 +96,19 @@ export class MaxiTypeDef {
         }
       }
     }
+    // Field kinds for fast-path parsing: 0=complex, 1=int, 2=bool, 3=str(explicit), 4=enum(str), 5=untyped(auto-coerce)
+    this._fieldKinds = new Array(len);
+    let allSimple = true;
+    for (let i = 0; i < len; i++) {
+      const te = this.fields[i].typeExpr;
+      if (te === 'int') this._fieldKinds[i] = 1;
+      else if (te === 'bool') this._fieldKinds[i] = 2;
+      else if (te === 'str') this._fieldKinds[i] = 3;
+      else if (te && te.startsWith('enum') && !te.includes('<int>')) this._fieldKinds[i] = 4;
+      else if (te === null || te === undefined) this._fieldKinds[i] = 5;
+      else { this._fieldKinds[i] = 0; allSimple = false; }
+    }
+    if (!allSimple) this._fieldKinds = null;
   }
 
   /** @returns {MaxiFieldDef | null} */
