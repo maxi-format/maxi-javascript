@@ -1,5 +1,5 @@
 {
-  "name": "maxi",
+  "name": "@maxi-format/maxi",
   "version": "0.1.0",
   "description": "JavaScript library to parse and dump MAXI schema.",
   "type": "module",
@@ -25,7 +25,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxi-format/maxi-javascript.git"
+    "url": "git+https://github.com/maxi-format/maxi-javascript.git"
   },
   "scripts": {
     "test": "node --test",
