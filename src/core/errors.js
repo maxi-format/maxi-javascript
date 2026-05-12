@@ -1,25 +1,32 @@
 /** Appendix B error codes from MAXI spec. */
 export const MaxiErrorCode = Object.freeze({
-  UnsupportedVersionError: 'E001',
-  DuplicateTypeError: 'E002',
-  UnknownTypeError: 'E003',
-  UnknownDirectiveError: 'E004',
-  InvalidSyntaxError: 'E005',
-  SchemaMismatchError: 'E006',
-  TypeMismatchError: 'E007',
-  ConstraintViolationError: 'E008',
-  UnresolvedReferenceError: 'E009',
-  CircularInheritanceError: 'E010',
-  MissingRequiredFieldError: 'E011',
-  InvalidConstraintValueError: 'E012',
-  UndefinedParentError: 'E013',
-  ConstraintSyntaxError: 'E014',
-  ArraySyntaxError: 'E015',
-  DuplicateIdentifierError: 'E016',
-  UnsupportedBinaryFormatError: 'E017',
-  InvalidDefaultValueError: 'E018',
-  StreamError: 'E019',
-  SchemaLoadError: 'E020',
+  // E1xx — Schema definition errors
+  InvalidSyntaxError: 'E101',
+  DuplicateTypeError: 'E102',
+  UnknownDirectiveError: 'E103',
+  // E2xx — Type system errors
+  UnknownTypeError: 'E201',
+  UndefinedParentError: 'E202',
+  CircularInheritanceError: 'E203',
+  UnresolvedReferenceError: 'E204',
+  DuplicateIdentifierError: 'E205',
+  // E3xx — Constraint errors
+  ConstraintSyntaxError: 'E301',
+  InvalidConstraintValueError: 'E302',
+  ConstraintViolationError: 'E303',
+  ArraySyntaxError: 'E304',
+  // E4xx — Data record errors
+  SchemaMismatchError: 'E401',
+  TypeMismatchError: 'E402',
+  MissingRequiredFieldError: 'E403',
+  InvalidDefaultValueError: 'E404',
+  UnsupportedBinaryFormatError: 'E405',
+  // E5xx — Data type errors
+  EnumAliasError: 'E501',
+  // E6xx — IO / runtime errors
+  UnsupportedVersionError: 'E601',
+  SchemaLoadError: 'E602',
+  StreamError: 'E603',
 });
 
 export class MaxiError extends Error {

@@ -339,3 +339,77 @@ test('dumpMaxi: element constraints separate from array constraints (§6.6)', ()
   assert.ok(maxi.includes('tags:str(>=3,<=20)[](>=1,<=10)'), `Expected separated constraints, got: ${maxi}`);
 });
 
+test('dumpMaxi: enum alias — full value input emits alias on wire', () => {
+  const users = [
+    { id: 1, name: 'Alice', role: 'admin' },
+    { id: 2, name: 'Bob',   role: 'editor' },
+  ];
+
+  const maxi = dumpMaxi(users, {
+    defaultAlias: 'U',
+    types: [{
+      alias: 'U',
+      name: 'User',
+      fields: [
+        { name: 'id',   typeExpr: 'int' },
+        { name: 'name' },
+        { name: 'role', typeExpr: 'enum[a:admin,e:editor,v:viewer]' },
+      ],
+    }],
+  });
+
+  assert.ok(maxi.includes('U(1|Alice|a)'), `expected alias 'a' for admin, got:\n${maxi}`);
+  assert.ok(maxi.includes('U(2|Bob|e)'),   `expected alias 'e' for editor, got:\n${maxi}`);
+});
+
+test('dumpMaxi: enum alias — alias input also emits alias on wire', () => {
+  const users = [{ id: 1, name: 'Alice', role: 'a' }];
+
+  const maxi = dumpMaxi(users, {
+    defaultAlias: 'U',
+    types: [{
+      alias: 'U',
+      fields: [
+        { name: 'id',   typeExpr: 'int' },
+        { name: 'name' },
+        { name: 'role', typeExpr: 'enum[a:admin,e:editor]' },
+      ],
+    }],
+  });
+
+  assert.ok(maxi.includes('U(1|Alice|a)'), `expected alias 'a', got:\n${maxi}`);
+});
+
+test('dumpMaxi: enum alias — no-alias enum unchanged', () => {
+  const users = [{ id: 1, role: 'admin' }];
+
+  const maxi = dumpMaxi(users, {
+    defaultAlias: 'U',
+    types: [{
+      alias: 'U',
+      fields: [
+        { name: 'id',   typeExpr: 'int' },
+        { name: 'role', typeExpr: 'enum[admin,user,guest]' },
+      ],
+    }],
+  });
+
+  assert.ok(maxi.includes('U(1|admin)'), `expected 'admin' unchanged, got:\n${maxi}`);
+});
+
+test('dumpMaxi: enum<int> alias — int input emits alias on wire', () => {
+  const devices = [{ id: 1, state: 1000 }];
+
+  const maxi = dumpMaxi(devices, {
+    defaultAlias: 'D',
+    types: [{
+      alias: 'D',
+      fields: [
+        { name: 'id',    typeExpr: 'int' },
+        { name: 'state', typeExpr: 'enum<int>[O:900,R:1000,E:999]' },
+      ],
+    }],
+  });
+
+  assert.ok(maxi.includes('D(1|R)'), `expected alias 'R' for 1000, got:\n${maxi}`);
+});

@@ -428,6 +428,9 @@ function dumpValue(value, fieldInfo, allTypes, options) {
   }
 
   if (typeof value === 'string') {
+    if (fieldInfo?.typeExpr?.startsWith('enum')) {
+      return getEnumWireToken(fieldInfo.typeExpr, value);
+    }
     return needsQuoting(value) ? `"${escapeString(value)}"` : value;
   }
 
@@ -436,6 +439,9 @@ function dumpValue(value, fieldInfo, allTypes, options) {
   }
 
   if (typeof value === 'number') {
+    if (fieldInfo?.typeExpr?.startsWith('enum')) {
+      return getEnumWireToken(fieldInfo.typeExpr, String(value));
+    }
     return String(value);
   }
 
@@ -505,6 +511,32 @@ function dumpMapKey(k) {
 
 const _NEEDS_QUOTING_RE = /[|()\[\]{}~,:\\"]/;
 const _LEAD_TRAIL_SPACE_RE = /^\s|\s$/;
+
+/**
+ * @param {string} str
+/**
+ * Returns the wire token (alias) for a semantic enum value.
+ * If the typeExpr has an alias for the given full value, returns the alias;
+ * otherwise returns the value itself.
+ * @param {string} typeExpr
+ * @param {string} fullValueStr
+ * @returns {string}
+ */
+function getEnumWireToken(typeExpr, fullValueStr) {
+  const m = typeExpr.match(/^enum(?:<\w+>)?\[([^\]]*)\]$/);
+  if (!m) return fullValueStr;
+  for (const token of m[1].split(',').map(v => v.trim()).filter(Boolean)) {
+    const ci = token.indexOf(':');
+    if (ci !== -1) {
+      const alias = token.slice(0, ci);
+      const full = token.slice(ci + 1);
+      if (full === fullValueStr || alias === fullValueStr) return alias;
+    } else {
+      if (token === fullValueStr) return token;
+    }
+  }
+  return fullValueStr;
+}
 
 /**
  * @param {string} str

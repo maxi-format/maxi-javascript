@@ -461,7 +461,43 @@ console.log(order.user.name);             // 'Julie'
 
 ---
 
-### 6. Forward references
+### 6. Enum value aliases
+
+Enum fields may use short aliases as wire tokens. The parser always returns the full semantic value.
+
+```js
+const input = `
+U:User(id:int|name|role:enum[a:admin,e:editor,v:viewer])
+###
+U(1|Alice|a)
+U(2|Bob|v)
+`.trim();
+
+const result = await parseMaxi(input);
+
+console.log(result.records[0].values[2]);  // 'admin': alias 'a' expanded
+console.log(result.records[1].values[2]);  // 'viewer': alias 'v' expanded
+```
+
+`enum<int>` aliases work the same way — the parsed value is always the integer:
+
+```js
+const input = `
+D:Device(id:int|name|state:enum<int>[O:900,I:910,R:1000,E:999])
+###
+D(1|sensor-A|R)
+`.trim();
+
+const result = await parseMaxi(input);
+
+console.log(result.records[0].values[2]);  // 1000: alias 'R' expanded to int
+```
+
+Wire tokens that are neither a declared alias nor the full value trigger a constraint violation (E303).
+
+---
+
+### 7. Forward references
 
 ```js
 const input = `
