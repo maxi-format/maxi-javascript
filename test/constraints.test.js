@@ -92,4 +92,92 @@ F(1|48656c6c6f)`;
   assert.equal(res.records[0].values[1], '48656c6c6f');
 });
 
+test('constraints: enum alias expands to full value on parse', async () => {
+  const input = `U:User(id:int|role:enum[a:admin,e:editor,v:viewer])
+###
+U(1|a)
+U(2|e)
+U(3|v)`;
+
+  const res = await parseMaxi(input);
+  assert.equal(res.records[0].values[1], 'admin');
+  assert.equal(res.records[1].values[1], 'editor');
+  assert.equal(res.records[2].values[1], 'viewer');
+});
+
+test('constraints: enum alias mixed mode (only some values aliased)', async () => {
+  const input = `U:User(id:int|role:enum[a:admin,user,guest])
+###
+U(1|a)
+U(2|user)
+U(3|guest)`;
+
+  const res = await parseMaxi(input);
+  assert.equal(res.records[0].values[1], 'admin');
+  assert.equal(res.records[1].values[1], 'user');
+  assert.equal(res.records[2].values[1], 'guest');
+});
+
+test('constraints: enum<int> alias expands to integer value on parse', async () => {
+  const input = `D:Device(id:int|state:enum<int>[O:900,R:1000,E:999])
+###
+D(1|R)
+D(2|O)`;
+
+  const res = await parseMaxi(input);
+  assert.equal(res.records[0].values[1], 1000);
+  assert.equal(res.records[1].values[1], 900);
+  assert.equal(typeof res.records[0].values[1], 'number');
+});
+
+test('constraints: enum full value accepted as wire token (backward compat)', async () => {
+  const input = `U:User(id:int|role:enum[a:admin,e:editor])
+###
+U(1|admin)`;
+
+  const res = await parseMaxi(input);
+  assert.equal(res.records[0].values[1], 'admin');
+});
+
+test('constraints: enum duplicate alias → E021', async () => {
+  const input = `U:User(id:int|role:enum[a:admin,a:editor])
+###`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.EnumAliasError
+  );
+});
+
+test('constraints: enum duplicate full value → E021', async () => {
+  const input = `U:User(id:int|role:enum[a:admin,b:admin])
+###`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.EnumAliasError
+  );
+});
+
+test('constraints: enum alias equals another entry full value → E021', async () => {
+  const input = `U:User(id:int|role:enum[admin:superadmin,e:admin])
+###`;
+
+  await assert.rejects(
+    () => parseMaxi(input),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.EnumAliasError
+  );
+});
+
+test('constraints: unknown enum wire token → E008 in strict mode', async () => {
+  const input = `U:User(id:int|role:enum[a:admin,e:editor])
+###
+U(1|superadmin)`;
+
+  await assert.rejects(
+    () => parseMaxi(input, { allowConstraintViolations: 'error' }),
+    (err) => err instanceof MaxiError && err.code === MaxiErrorCode.ConstraintViolationError
+  );
+});
+
 

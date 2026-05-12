@@ -24,6 +24,56 @@ export function validateSchemaConstraints(schema, filename) {
     for (const field of typeDef.fields) {
       validateAnnotationTypeCompat(field, typeDef.alias, filename);
       validateConstraintConflicts(field, typeDef.alias, filename);
+      validateEnumAliases(field, typeDef.alias, filename);
+    }
+  }
+}
+
+function validateEnumAliases(field, typeAlias, filename) {
+  if (!field.typeExpr?.startsWith('enum')) return;
+  const m = field.typeExpr.match(/^enum(?:<(\w+)>)?\[([^\]]*)\]$/);
+  if (!m) return;
+
+  const tokens = m[2].split(',').map(v => v.trim()).filter(Boolean);
+  const aliases = new Set();
+  const fullValues = new Set();
+
+  for (const token of tokens) {
+    const ci = token.indexOf(':');
+    const alias = ci !== -1 ? token.slice(0, ci) : token;
+    const full = ci !== -1 ? token.slice(ci + 1) : token;
+
+    if (aliases.has(alias)) {
+      throw new MaxiError(
+        `Duplicate enum alias '${alias}' in field '${field.name}' of type '${typeAlias}'`,
+        MaxiErrorCode.EnumAliasError,
+        { filename }
+      );
+    }
+    if (fullValues.has(full)) {
+      throw new MaxiError(
+        `Duplicate enum value '${full}' in field '${field.name}' of type '${typeAlias}'`,
+        MaxiErrorCode.EnumAliasError,
+        { filename }
+      );
+    }
+    aliases.add(alias);
+    fullValues.add(full);
+  }
+
+  for (const token of tokens) {
+    const ci = token.indexOf(':');
+    if (ci === -1) continue;
+    const alias = token.slice(0, ci);
+    if (fullValues.has(alias)) {
+      const ownFull = token.slice(ci + 1);
+      if (alias !== ownFull) {
+        throw new MaxiError(
+          `Enum alias '${alias}' in field '${field.name}' of type '${typeAlias}' equals the full value of another entry`,
+          MaxiErrorCode.EnumAliasError,
+          { filename }
+        );
+      }
     }
   }
 }
@@ -221,8 +271,8 @@ export function validateEnumValue(typeExpr, value, fieldName, isStrict, result, 
   if (!enumInfo) return;
 
   const strValue = String(value);
-  if (!enumInfo.values.includes(strValue)) {
-    const msg = `Value '${strValue}' not in enum [${enumInfo.values.join(',')}] for field '${fieldName}'`;
+  if (!enumInfo.aliasMap.has(strValue)) {
+    const msg = `Value '${strValue}' not in enum [${[...enumInfo.aliasMap.keys()].join(',')}] for field '${fieldName}'`;
     if (isStrict) {
       throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename });
     }
@@ -239,9 +289,28 @@ function parseEnumTypeExpr(typeExpr) {
   if (!m) return null;
 
   const baseType = m[1] || 'str';
-  const values = m[2].split(',').map(v => v.trim()).filter(Boolean);
+  const isInt = baseType === 'int';
+  const tokens = m[2].split(',').map(v => v.trim()).filter(Boolean);
 
-  return { baseType, values };
+  const aliasMap = new Map();
+  const values = [];
+  for (const token of tokens) {
+    const ci = token.indexOf(':');
+    let alias, fullStr;
+    if (ci !== -1) {
+      alias = token.slice(0, ci);
+      fullStr = token.slice(ci + 1);
+    } else {
+      alias = token;
+      fullStr = token;
+    }
+    const fullVal = isInt ? parseInt(fullStr, 10) : fullStr;
+    aliasMap.set(alias, fullVal);
+    if (alias !== fullStr) aliasMap.set(fullStr, fullVal);
+    values.push(String(fullVal));
+  }
+
+  return { baseType, values, aliasMap };
 }
 
 function getBaseTypeName(typeExpr) {

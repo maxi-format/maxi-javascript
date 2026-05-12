@@ -301,13 +301,15 @@ export class RecordParser {
     }
 
     for (let i = 0; i < fieldCount; i++) {
-      const enumVals = typeDef._enumValues[i];
-      if (enumVals) {
+      const aliasMap = typeDef._enumAliasMap?.[i];
+      if (aliasMap) {
         const value = finalValues[i];
         if (value !== null && value !== undefined) {
           const strValue = String(value);
-          if (!enumVals.includes(strValue)) {
-            const msg = `Value '${strValue}' not in enum [${enumVals.join(',')}] for field '${typeDef.fields[i].name}'`;
+          if (aliasMap.has(strValue)) {
+            finalValues[i] = aliasMap.get(strValue);
+          } else {
+            const msg = `Value '${strValue}' not in enum for field '${typeDef.fields[i].name}'`;
             if (this._allowConstraintViolations === 'error') {
               throw new MaxiError(msg, MaxiErrorCode.ConstraintViolationError, { line: lineNumber, filename: this._filename });
             }

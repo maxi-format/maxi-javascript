@@ -38,6 +38,8 @@ export class MaxiTypeDef {
     this._requiredFlags = null;
     /** @type {(string[]|null)[]|null} Cached parsed enum values per field (null entry = not enum) */
     this._enumValues = null;
+    /** @type {(Map<string,any>|null)[]|null} Cached wire-token → semantic-value maps per field (null = not enum) */
+    this._enumAliasMap = null;
     /** @type {boolean} Whether any field has constraints needing runtime validation */
     this._hasRuntimeConstraints = false;
   }
@@ -50,6 +52,7 @@ export class MaxiTypeDef {
     this._idFieldIndex = -2;
     this._requiredFlags = null;
     this._enumValues = null;
+    this._enumAliasMap = null;
   }
 
   /** Precompute cached field metadata for fast record parsing */
@@ -75,19 +78,42 @@ export class MaxiTypeDef {
       this._requiredFlags[i] = this.fields[i].constraints?.some(c => c.type === 'required') ?? false;
     }
 
-    // enum values cache
     this._enumValues = new Array(len);
+    this._enumAliasMap = new Array(len);
     this._hasRuntimeConstraints = false;
     for (let i = 0; i < len; i++) {
       const f = this.fields[i];
       const te = f.typeExpr;
       if (te && te.startsWith('enum')) {
-        const m = te.match(/^enum(?:<\w+>)?\[([^\]]*)\]$/);
-        this._enumValues[i] = m ? m[1].split(',').map(v => v.trim()).filter(Boolean) : null;
+        const m = te.match(/^enum(?:<(\w+)>)?\[([^\]]*)\]$/);
+        if (m) {
+          const isInt = (m[1] || 'str') === 'int';
+          const tokens = m[2].split(',').map(v => v.trim()).filter(Boolean);
+          this._enumValues[i] = tokens;
+          const amap = new Map();
+          for (const token of tokens) {
+            const ci = token.indexOf(':');
+            let alias, fullStr;
+            if (ci !== -1) {
+              alias = token.slice(0, ci);
+              fullStr = token.slice(ci + 1);
+            } else {
+              alias = token;
+              fullStr = token;
+            }
+            const fullVal = isInt ? parseInt(fullStr, 10) : fullStr;
+            amap.set(alias, fullVal);
+            if (alias !== fullStr) amap.set(fullStr, fullVal);
+          }
+          this._enumAliasMap[i] = amap;
+        } else {
+          this._enumValues[i] = null;
+          this._enumAliasMap[i] = null;
+        }
       } else {
         this._enumValues[i] = null;
+        this._enumAliasMap[i] = null;
       }
-      // Check for runtime constraints (comparison, pattern, exact-length)
       if (f.constraints) {
         for (const c of f.constraints) {
           if (c.type === 'comparison' || c.type === 'pattern' || c.type === 'exact-length') {
@@ -96,7 +122,6 @@ export class MaxiTypeDef {
         }
       }
     }
-    // Field kinds for fast-path parsing: 0=complex, 1=int, 2=bool, 3=str(explicit), 4=enum(str), 5=untyped(auto-coerce)
     this._fieldKinds = new Array(len);
     let allSimple = true;
     for (let i = 0; i < len; i++) {
@@ -148,7 +173,7 @@ export class MaxiFieldDef {
   /** @returns {boolean} */
   isId() { return this.constraints?.some(c => c.type === 'id') ?? false; }
 
-  /** @returns {string[] | null} Parsed enum values if this field is an enum type */
+  /** @returns {string[] | null} Parsed enum semantic values (right-hand side of alias:value) if this field is an enum type */
   get enumValues() {
     if (!this.typeExpr?.startsWith('enum')) return null;
     const m = this.typeExpr.match(/^enum(?:<\w+>)?\[([^\]]*)\]$/);
@@ -156,6 +181,8 @@ export class MaxiFieldDef {
     return m[1].split(',').map(v => {
       const t = v.trim();
       if (t.startsWith('"') && t.endsWith('"')) return t.slice(1, -1);
+      const ci = t.indexOf(':');
+      if (ci !== -1) return t.slice(ci + 1);
       return t;
     }).filter(Boolean);
   }
