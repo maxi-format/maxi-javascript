@@ -1,13 +1,11 @@
-# maxi-schema
+# @maxi-format/maxi
 
 JavaScript library for parsing and dumping **MAXI schema + records**.
-
-Version: `0.1.0`
 
 ## Install
 
 ```bash
-npm install maxi-format/maxi-javascript
+npm install @maxi-format/maxi
 ```
 
 ## API overview
@@ -28,7 +26,7 @@ npm install maxi-format/maxi-javascript
 ### Parse
 
 ```js
-import { parseMaxi } from 'maxi-schema';
+import { parseMaxi } from '@maxi-format/maxi';
 
 const input = `
 U:User(id:int|name|email)
@@ -43,7 +41,7 @@ console.log(res.records[0].values); // [1, 'Julie', 'julie@maxi.org']
 ### Parse into class instances
 
 ```js
-import { parseMaxiAutoAs } from 'maxi-schema';
+import { parseMaxiAutoAs } from '@maxi-format/maxi';
 
 class User {
   static maxiSchema = {
@@ -61,7 +59,7 @@ console.log(objects.U[0].name);            // 'Julie'
 ### Dump
 
 ```js
-import { dumpMaxiAuto } from 'maxi-schema';
+import { dumpMaxiAuto } from '@maxi-format/maxi';
 
 const maxi = dumpMaxiAuto([new User({ id: 1, name: 'Julie' })]);
 ```
@@ -69,7 +67,7 @@ const maxi = dumpMaxiAuto([new User({ id: 1, name: 'Julie' })]);
 Or with explicit types via `dumpMaxi`:
 
 ```js
-import { dumpMaxi } from 'maxi-schema';
+import { dumpMaxi } from '@maxi-format/maxi';
 
 const maxi = dumpMaxi([{ id: 1, name: 'Julie' }], {
   defaultAlias: 'U',

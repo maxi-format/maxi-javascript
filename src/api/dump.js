@@ -42,6 +42,7 @@ export function dumpMaxi(data, options = {}) {
     return dumpMaxiFromParseResult(/** @type {import('../core/types.js').MaxiParseResult} */ (data), options);
   }
 
+  /** @type {Record<string, Array<Record<string, any>>>} */
   let dataMap = {};
   if (Array.isArray(data)) {
     if (!options.defaultAlias) throw new Error('dumpMaxi requires `options.defaultAlias` when dumping an array.');
@@ -52,7 +53,7 @@ export function dumpMaxi(data, options = {}) {
       if (!options.defaultAlias) throw new Error('dumpMaxi requires `options.defaultAlias` when dumping a single object.');
       dataMap[options.defaultAlias] = [data];
     } else {
-      dataMap = data;
+      dataMap = /** @type {Record<string, Array<Record<string, any>>>} */ (data);
     }
   }
 
@@ -263,10 +264,10 @@ function resolveInheritanceForDump(types) {
 function dumpTypeInfo(t, multiline) {
   const header = t.name ? `${t.alias}:${t.name}` : t.alias;
   const parents = t.parents?.length ? `<${t.parents.join(',')}>` : '';
-  const fields = (t.fields ?? []).map(f => dumpField(f)).join('|');
+  const fields = (t.fields ?? []).map(f => dumpField(/** @type {any} */ (f))).join('|');
 
   if (!multiline) return `${header}${parents}(${fields})`;
-  const body = (t.fields ?? []).map(f => `  ${dumpField(f)}`).join('|\n');
+  const body = (t.fields ?? []).map(f => `  ${dumpField(/** @type {any} */ (f))}`).join('|\n');
   return `${header}${parents}(\n${body}\n)`;
 }
 
@@ -509,11 +510,9 @@ function dumpMapKey(k) {
   return needsQuoting(k) ? `"${escapeString(k)}"` : k;
 }
 
-const _NEEDS_QUOTING_RE = /[|()\[\]{}~,:\\"]/;
+const _NEEDS_QUOTING_RE = /[|()[\]{}~,:\\"]/;
 const _LEAD_TRAIL_SPACE_RE = /^\s|\s$/;
 
-/**
- * @param {string} str
 /**
  * Returns the wire token (alias) for a semantic enum value.
  * If the typeExpr has an alias for the given full value, returns the alias;

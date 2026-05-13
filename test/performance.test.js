@@ -123,7 +123,7 @@ test('Performance comparison: MAXI vs JSON vs XML parsing', async (t) => {
 });
 
 // NEW: dumping benchmark
-test('Performance comparison: MAXI vs JSON dumping', (t) => {
+test('Performance comparison: MAXI vs JSON dumping', (_t) => {
   console.log(`\n--- Generating ${DUMP_SIZE} records for dump benchmark ---`);
   const users = generateUsers(DUMP_SIZE);
 

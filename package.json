@@ -1,6 +1,6 @@
 {
   "name": "@maxi-format/maxi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "JavaScript library to parse and dump MAXI schema.",
   "type": "module",
   "main": "index.js",
@@ -29,6 +29,14 @@
   },
   "scripts": {
     "test": "node --test",
-    "test:watch": "node --test --watch"
+    "test:watch": "node --test --watch",
+    "analyse": "tsc --noEmit && eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^17.6.0",
+    "typescript": "^5.0.0"
   }
 }

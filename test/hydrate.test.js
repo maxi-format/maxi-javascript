@@ -40,24 +40,6 @@ class Order {
   }
 }
 
-class Address {
-  static maxiSchema = {
-    alias: 'A',
-    name: 'Address',
-    fields: [
-      { name: 'id' },
-      { name: 'street' },
-      { name: 'city' },
-    ],
-  };
-
-  constructor({ id, street, city } = {}) {
-    this.id     = id;
-    this.street = street;
-    this.city   = city;
-  }
-}
-
 function makeMaxi(schemaLines, recordLines) {
   return [...schemaLines, '###', ...recordLines].join('\n');
 }

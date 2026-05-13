@@ -19,6 +19,8 @@ export class SchemaParser {
     this.loadingStack = new Set();
     /** @type {Set<string>} */
     this.localAliases = new Set();
+    /** @type {boolean} */
+    this._isImported = false;
   }
 
   async parse() {
@@ -278,7 +280,6 @@ export class SchemaParser {
       );
     }
 
-    // Allow trailing whitespace after the closing paren, but nothing else
     const tail = trimmed.slice(closeIdx + 1).trim();
     if (tail.length !== 0) {
       throw new MaxiError(
@@ -507,7 +508,6 @@ export class SchemaParser {
     if (eqIdxName !== -1) {
       defaultValue = namePart.slice(eqIdxName + 1).trim();
       namePart = namePart.slice(0, eqIdxName).trim();
-      // After extracting default value, try again to extract constraints from name
       if (constraints.length === 0) {
         const trailing = this.extractTrailingGroup(namePart, '(', ')');
         if (trailing) {
@@ -529,7 +529,6 @@ export class SchemaParser {
       }
     }
 
-    // 4) Parse typeExpr + annotation from restPart
     let typeExpr = null;
     let annotation = null;
 
@@ -702,7 +701,6 @@ export class SchemaParser {
     let inString = false;
     let escapeNext = false;
 
-    // Track nesting inside constraint values (e.g., mime:[a,b], pattern:(...), etc.)
     let bracketDepth = 0;
     let parenDepth = 0;
     let braceDepth = 0;
@@ -740,7 +738,6 @@ export class SchemaParser {
       else if (ch === '{') braceDepth++;
       else if (ch === '}') braceDepth = Math.max(0, braceDepth - 1);
 
-      // Only split on commas at top-level of the constraint list
       if (ch === ',' && bracketDepth === 0 && parenDepth === 0 && braceDepth === 0) {
         parts.push(current);
         current = '';
@@ -758,16 +755,13 @@ export class SchemaParser {
     const s = mimeSpec.trim();
     if (!s) return [];
 
-    // Single MIME type
     if (!s.startsWith('[')) {
-      // allow quoted mime too: mime:"image/png"
       const single = s.startsWith('"') && s.endsWith('"')
         ? this.unescapeString(s.slice(1, -1))
         : s;
       return [single.trim()].filter(Boolean);
     }
 
-    // List of MIME types: [type1,type2,...] (items may be quoted)
     if (!s.endsWith(']')) {
       throw new MaxiError(
         `Invalid mime constraint value: ${mimeSpec}`,
@@ -778,7 +772,6 @@ export class SchemaParser {
     const content = s.slice(1, -1).trim();
     if (!content) return [];
 
-    // Split items by comma at top-level (quotes allowed)
     const items = [];
     let cur = '';
     let inString = false;
@@ -842,8 +835,8 @@ export class SchemaParser {
   parseDecimalPrecision(raw) {
     // Split on '.'
     const dotIdx = raw.indexOf('.');
-    const intPart = raw.slice(0, dotIdx);     // e.g. "0:10", "5", ""
-    const fracPart = raw.slice(dotIdx + 1);   // e.g. "2", "2:4", ""
+    const intPart = raw.slice(0, dotIdx);
+    const fracPart = raw.slice(dotIdx + 1);
 
     let intMin = null, intMax = null, fracMin = null, fracMax = null;
 
@@ -853,7 +846,6 @@ export class SchemaParser {
         intMin = a !== '' ? parseInt(a, 10) : null;
         intMax = b !== '' ? parseInt(b, 10) : null;
       } else {
-        // Single number = exact (both min and max)
         intMax = parseInt(intPart, 10);
       }
     }
@@ -864,7 +856,6 @@ export class SchemaParser {
         fracMin = a !== '' ? parseInt(a, 10) : null;
         fracMax = b !== '' ? parseInt(b, 10) : null;
       } else {
-        // Single number = exact (both min and max)
         fracMax = parseInt(fracPart, 10);
       }
     }
@@ -1012,7 +1003,6 @@ export class SchemaParser {
 
       visiting.add(alias);
 
-      // Resolve parent types first
       const inheritedFields = [];
       for (const parentAlias of typeDef.parents) {
         const parentType = this.result.schema.getType(parentAlias);
@@ -1023,10 +1013,8 @@ export class SchemaParser {
           );
         }
 
-        // Recursively resolve parent
         resolveType(parentAlias);
 
-        // Add parent fields (avoid duplicates)
         for (const field of parentType.fields) {
           if (!inheritedFields.some(f => f.name === field.name)) {
             inheritedFields.push(field);

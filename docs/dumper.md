@@ -22,7 +22,7 @@ The `dumpMaxi` function serializes JavaScript objects, arrays, or parse results 
 ## Overview
 
 ```js
-import { dumpMaxi } from 'maxi-schema';
+import { dumpMaxi } from '@maxi-format/maxi';
 
 const maxi = dumpMaxi(data, options);
 ```
@@ -145,7 +145,7 @@ class User {
 When you can't modify the class (e.g. it's from a library):
 
 ```js
-import { defineMaxiSchema } from 'maxi-schema';
+import { defineMaxiSchema } from '@maxi-format/maxi';
 
 defineMaxiSchema(SomeExternalClass, {
   alias: 'E',
@@ -183,7 +183,7 @@ use `dumpMaxiAuto` instead of `dumpMaxi` — no `options.types` or `options.defa
 needed.
 
 ```js
-import { dumpMaxiAuto } from 'maxi-schema';
+import { dumpMaxiAuto } from '@maxi-format/maxi';
 
 // Array of instances — alias resolved from the class schema
 const maxi = dumpMaxiAuto([new User({ id: 1, name: 'Julie' })]);
@@ -272,7 +272,7 @@ This resolution happens once at the start of `dumpMaxiFromObjects` via `resolveI
 ### 1. Array of objects with inline type definitions
 
 ```js
-import { dumpMaxi } from 'maxi-schema';
+import { dumpMaxi } from '@maxi-format/maxi';
 
 const users = [
   { id: 1, name: 'Julie' },
@@ -497,7 +497,7 @@ The `Employee` record emits all three fields (`id`, `name` from `Person`; `depar
 ### 7. Round-trip a parse result
 
 ```js
-import { parseMaxi, dumpMaxi } from 'maxi-schema';
+import { parseMaxi, dumpMaxi } from '@maxi-format/maxi';
 
 const input = `U:User(id:int|name|email=unknown)
 ###
@@ -560,7 +560,7 @@ U(1|Julie)
 ### 10. `dumpMaxiAuto` — zero-config dump from annotated classes
 
 ```js
-import { dumpMaxiAuto } from 'maxi-schema';
+import { dumpMaxiAuto } from '@maxi-format/maxi';
 
 class User {
   static maxiSchema = {

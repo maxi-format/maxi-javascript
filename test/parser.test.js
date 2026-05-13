@@ -112,7 +112,7 @@ U:User(id:int|name|role=admin)
 ###
 U(1|Julie)`;
 
-  const loadSchema = async (path) => {
+  const loadSchema = async (_path) => {
     return `U:User(id:int|name)`;
   };
 
@@ -139,7 +139,7 @@ test('parse: cross-file duplicate in imported file also errors within that file'
   const input = `@schema:bad.mxs
 ###`;
 
-  const loadSchema = async (path) => {
+  const loadSchema = async (_path) => {
     // Same alias defined twice within the same .mxs file
     return `U:User(id:int|name)
 U:User2(id:int|email)`;

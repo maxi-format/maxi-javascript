@@ -14,7 +14,6 @@ export {
 export { defineMaxiSchema, getMaxiSchema, undefineMaxiSchema } from './core/schema-registry.js';
 
 /**
- * @typedef {import('./core/types.js').MaxiMode} MaxiMode
  * @typedef {import('./api/parse.js').MaxiParseOptions} MaxiParseOptions
  * @typedef {import('./api/dump.js').MaxiDumpOptions} MaxiDumpOptions
  * @typedef {import('./api/dump.js').MaxiDumpTypeInput} MaxiDumpTypeInput

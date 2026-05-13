@@ -1,6 +1,6 @@
 import { MaxiError, MaxiErrorCode } from '../core/errors.js';
 import { MaxiRecord } from '../core/types.js';
-import { validateRecordConstraints, validateEnumValue } from './constraint-validator.js';
+import { validateRecordConstraints } from './constraint-validator.js';
 
 /** Sentinel for explicit null (~) to distinguish from missing/empty values. */
 const EXPLICIT_NULL = Object.freeze({});

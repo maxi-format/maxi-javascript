@@ -10,6 +10,10 @@ export class MaxiSchema {
     this.imports = [];
     /** @type {Map<string, MaxiTypeDef>} */
     this.types = new Map();
+    /** @type {Map<string, string> | undefined} */
+    this._nameToAlias = undefined;
+    /** @type {((aliasOrName: string) => string | null) | undefined} */
+    this.resolveTypeAlias = undefined;
   }
 
   /** @param {MaxiTypeDef} typeDef */
@@ -152,6 +156,11 @@ export class MaxiTypeDef {
  * @typedef {Object} ParsedConstraint
  * @property {'required'|'id'|'comparison'|'pattern'|'mime'|'decimal-precision'|'exact-length'} type
  * @property {any} [value]
+ * @property {string} [operator]
+ * @property {number|null} [intMin]
+ * @property {number|null} [intMax]
+ * @property {number|null} [fracMin]
+ * @property {number|null} [fracMax]
  */
 
 export class MaxiFieldDef {

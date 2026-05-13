@@ -55,7 +55,7 @@ O(100|1|49.99)
 ## `parseMaxi` — Full In-Memory Parse
 
 ```js
-import { parseMaxi } from 'maxi-schema';
+import { parseMaxi } from '@maxi-format/maxi';
 
 const result = await parseMaxi(input, options);
 ```
@@ -80,7 +80,7 @@ Parses the full input at once. Returns a `MaxiParseResult` containing:
 For large files where you don't want to hold all records in memory at once.
 
 ```js
-import { streamMaxi } from 'maxi-schema';
+import { streamMaxi } from '@maxi-format/maxi';
 
 const stream = await streamMaxi(input, options);
 
@@ -187,7 +187,7 @@ class User {
 ### Option B: `defineMaxiSchema` for external / third-party classes
 
 ```js
-import { defineMaxiSchema } from 'maxi-schema';
+import { defineMaxiSchema } from '@maxi-format/maxi';
 
 defineMaxiSchema(User, {
   alias: 'U',
@@ -221,7 +221,7 @@ Each field descriptor:
 ## `parseMaxiAs` — Parse into Class Instances
 
 ```js
-import { parseMaxiAs } from 'maxi-schema';
+import { parseMaxiAs } from '@maxi-format/maxi';
 
 const { objects, schema, warnings } = await parseMaxiAs(input, classMap, options);
 ```
@@ -253,7 +253,7 @@ Only aliases present in `classMap` are hydrated. Records with other aliases are 
 Convenience variant — pass an array of classes instead of an alias map. Each class must have `static maxiSchema` or be registered via `defineMaxiSchema`.
 
 ```js
-import { parseMaxiAutoAs } from 'maxi-schema';
+import { parseMaxiAutoAs } from '@maxi-format/maxi';
 
 const { objects } = await parseMaxiAutoAs(input, [User, Order], options);
 ```
@@ -332,7 +332,7 @@ The first strategy is verified by checking that the first expected field actuall
 ### 1. Basic `parseMaxi` — raw records
 
 ```js
-import { parseMaxi } from 'maxi-schema';
+import { parseMaxi } from '@maxi-format/maxi';
 
 const input = `
 U:User(id:int|name|email=unknown)
@@ -353,7 +353,7 @@ console.log(result.records[1].values);  // [2, 'Matt', 'unknown']  ← default f
 ### 2. `streamMaxi` — large files
 
 ```js
-import { streamMaxi } from 'maxi-schema';
+import { streamMaxi } from '@maxi-format/maxi';
 
 const stream = await streamMaxi(input);
 
@@ -372,7 +372,7 @@ for await (const record of stream) {
 ### 3. `parseMaxiAs` — hydrate into class instances
 
 ```js
-import { parseMaxiAs } from 'maxi-schema';
+import { parseMaxiAs } from '@maxi-format/maxi';
 
 class User {
   static maxiSchema = {
@@ -410,7 +410,7 @@ console.log(objects.U[0].name);             // 'Julie'
 ### 4. `parseMaxiAutoAs` — zero-config with `static maxiSchema`
 
 ```js
-import { parseMaxiAutoAs } from 'maxi-schema';
+import { parseMaxiAutoAs } from '@maxi-format/maxi';
 
 // Alias is read from User.maxiSchema.alias and Order.maxiSchema.alias automatically
 const { objects } = await parseMaxiAutoAs(input, [User, Order]);
@@ -519,7 +519,7 @@ console.log(objects.O[0].user instanceof User);  // true
 ### 7. External schema via `@schema` import
 
 ```js
-import { parseMaxiAs } from 'maxi-schema';
+import { parseMaxiAs } from '@maxi-format/maxi';
 import { readFileSync } from 'node:fs';
 
 const input = `
@@ -555,7 +555,7 @@ await parseMaxiAs(input, { U: User }, { allowAdditionalFields: 'error' });
 ### 9. `defineMaxiSchema` for classes you don't own
 
 ```js
-import { defineMaxiSchema, parseMaxiAutoAs } from 'maxi-schema';
+import { defineMaxiSchema, parseMaxiAutoAs } from '@maxi-format/maxi';
 
 // Third-party class — can't add static maxiSchema
 import { ExternalProduct } from 'some-library';
