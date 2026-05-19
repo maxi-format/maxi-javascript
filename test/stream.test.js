@@ -44,7 +44,7 @@ U(3|Charlie)`;
 });
 
 test('stream: schema errors throw before records are available', async () => {
-  const input = `@version:2.0.0
+  const input = `@maxi:2.0.0
 U:User(id:int)
 ###
 U(1)`;

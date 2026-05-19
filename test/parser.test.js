@@ -505,10 +505,14 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
       .map(p => p.replace(/~1/g, '/').replace(/~0/g, '~'));
 
     if (parts[0] !== 'types') {
-      throw new Error(`schema_validations: only #/schema/types/... paths are supported`);
+      let cur = schema;
+      for (const seg of parts) {
+        if (cur == null) return undefined;
+        cur = cur instanceof Map ? cur.get(seg) : cur[seg];
+      }
+      return cur;
     }
 
-    // parts[1] = alias
     const alias = parts[1];
     let cur = schema.getType(alias);
     if (cur === undefined) return undefined;
@@ -519,8 +523,6 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
       if (Array.isArray(cur) && /^[0-9]+$/.test(seg)) {
         cur = cur[Number(seg)];
       } else if (Array.isArray(cur) && parts[i - 1] === 'constraints') {
-        // Access constraint by type name: constraints/mime -> find {type:'mime'} entry
-        // Special keys: minVal (>=), maxVal (<=), mime
         let found;
         if (seg === 'minVal') {
           found = cur.find(c => c.type === 'comparison' && c.operator === '>=');
@@ -547,7 +549,6 @@ test('testdata: run all fixtures in ../testdata/*', async () => {
   }
 
   function thisTypeAliasFromName(schema, typeName) {
-    // Find alias by matching td.name (or alias itself) to the requested typeName
     for (const [alias, td] of schema.types.entries()) {
       if ((td.name || alias) === typeName) return alias;
     }
@@ -585,6 +586,6 @@ U(1|Julie)`;
 
   assert.ok(res.schema.hasType('U'));
   assert.ok(res.schema.hasType('O'));
-  assert.equal(res.records[0].values, res.records[0].values); // just confirm it resolves
+  assert.equal(res.records[0].values, res.records[0].values);
 });
 

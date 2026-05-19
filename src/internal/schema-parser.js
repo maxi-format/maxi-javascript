@@ -102,8 +102,12 @@ export class SchemaParser {
     const value = directiveValue.trim();
 
     switch (directiveName) {
-      case 'version':
+      case 'maxi':
         this.parseVersionDirective(value, lineNumber);
+        break;
+
+      case 'version':
+        this.result.schema.userVersion = value;
         break;
 
       case 'schema':
@@ -136,7 +140,7 @@ export class SchemaParser {
       );
     }
 
-    this.result.schema.version = value;
+    this.result.schema.maxiVersion = value;
   }
 
   /** @private */
@@ -1071,7 +1075,7 @@ export class SchemaParser {
       if (error instanceof MaxiError) throw error;
 
       throw new MaxiError(
-        `Failed to load schema '${pathOrUrl}': ${error?.message ?? String(error)}`,
+        `Failed to load schema '${pathOrUrl}': ${error instanceof Error ? error.message : String(error)}`,
         MaxiErrorCode.SchemaLoadError,
         { line: lineNumber, filename: this.options.filename, cause: error }
       );

@@ -5,7 +5,9 @@
 export class MaxiSchema {
   constructor() {
     /** @type {string} */
-    this.version = '1.0.0';
+    this.maxiVersion = '1.0.0';
+    /** @type {string | null} */
+    this.userVersion = null;
     /** @type {string[]} */
     this.imports = [];
     /** @type {Map<string, MaxiTypeDef>} */

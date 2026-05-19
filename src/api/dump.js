@@ -3,6 +3,7 @@
  * @property {boolean} [multiline=false]
  * @property {boolean} [includeTypes=true]
  * @property {string} [version]
+ * @property {string} [userVersion]
  * @property {string} [schemaFile]
  * @property {Map<string, MaxiDumpTypeInput> | MaxiDumpTypeInput[]} [types]
  * @property {string} [defaultAlias]
@@ -20,6 +21,7 @@
 /**
  * @typedef {Object} MaxiDumpSchemaInput
  * @property {string} [version]
+ * @property {string} [userVersion]
  * @property {string[]} [imports]
  * @property {Map<string, MaxiDumpTypeInput> | MaxiDumpTypeInput[]} [types]
  */
@@ -60,6 +62,7 @@ export function dumpMaxi(data, options = {}) {
   const input = {
     schema: {
       version: options.version,
+      userVersion: options.userVersion,
       imports: options.schemaFile ? [options.schemaFile] : [],
       types: options.types,
     },
@@ -79,8 +82,11 @@ function dumpMaxiFromParseResult(result, options) {
   const includeTypes = options.includeTypes ?? true;
   const out = [];
 
-  if (result?.schema?.version && result.schema.version !== '1.0.0') {
-    out.push(`@version:${result.schema.version}`);
+  if (result?.schema?.maxiVersion && result.schema.maxiVersion !== '1.0.0') {
+    out.push(`@maxi:${result.schema.maxiVersion}`);
+  }
+  if (result?.schema?.userVersion) {
+    out.push(`@version:${result.schema.userVersion}`);
   }
   for (const imp of result?.schema?.imports ?? []) {
     out.push(`@schema:${imp}`);
@@ -119,7 +125,8 @@ function dumpMaxiFromObjects(input, options) {
 
   resolveInheritanceForDump(types);
 
-  if (schema.version && schema.version !== '1.0.0') out.push(`@version:${schema.version}`);
+  if (schema.version && schema.version !== '1.0.0') out.push(`@maxi:${schema.version}`);
+  if (schema.userVersion) out.push(`@version:${schema.userVersion}`);
   for (const imp of schema.imports ?? []) out.push(`@schema:${imp}`);
 
   if (includeTypes && types.size > 0) {
@@ -420,12 +427,14 @@ function dumpRecord(record, multiline) {
 function dumpValue(value, fieldInfo, allTypes, options) {
   if (value === null || value === undefined) return '~';
 
-  if (value instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))) {
+  if (value instanceof Uint8Array) {
     const annotation = fieldInfo?.annotation;
     if (annotation === 'hex') {
-      return Buffer.from(value).toString('hex');
+      return Array.from(value, b => b.toString(16).padStart(2, '0')).join('');
     }
-    return Buffer.from(value).toString('base64');
+    let bin = '';
+    for (let i = 0; i < value.length; i++) bin += String.fromCharCode(value[i]);
+    return btoa(bin);
   }
 
   if (typeof value === 'string') {

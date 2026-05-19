@@ -46,7 +46,7 @@ U(1|Julie|julie@example.com)          ← records (data section)
 O(100|1|49.99)
 ```
 
-- Everything **above** `###` is the schema section (type defs, directives like `@version`, `@schema`).
+- Everything **above** `###` is the schema section (type defs, directives like `@maxi`, `@schema`).
 - Everything **below** `###` is the records section.
 - If no `###` is present, the parser auto-detects whether the input is schema-only or records-only.
 
@@ -68,7 +68,7 @@ Parses the full input at once. Returns a `MaxiParseResult` containing:
 ### What the parser does internally
 
 1. **Split sections** at `###`
-2. **Parse schema section** — type definitions, `@version`, `@schema` imports (loaded via `options.loadSchema`)
+2. **Parse schema section** — type definitions, `@maxi`, `@schema` imports (loaded via `options.loadSchema`)
 3. **Parse records section** — each record is matched to its type def; values are coerced to the declared type (`int`, `bool`, `decimal`, etc.)
 4. **Build object registry** — if any field references another type, an internal `_objectRegistry` (alias → id → object) is built for reference validation
 5. **Validate references** — unresolved references emit a warning (lax) or throw (strict)
@@ -131,7 +131,8 @@ for await (const record of stream.records()) {
 schema.getType('U')         // → MaxiTypeDef | undefined
 schema.hasType('U')         // → boolean
 schema.types                // → Map<alias, MaxiTypeDef>
-schema.version              // → string
+schema.maxiVersion          // → string
+schema.userVersion          // → string | null
 schema.imports              // → string[]
 ```
 
