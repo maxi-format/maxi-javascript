@@ -293,7 +293,7 @@ function dumpObjectAsRecord(alias, obj, t, allTypes, multiline, options) {
     vals = fields.map(f => {
       if (!Object.prototype.hasOwnProperty.call(obj, f.name)) return '';
       const v = obj[f.name];
-      if (v === null || v === undefined) return '~';
+      if (v === null || v === undefined) return f.defaultValue !== undefined ? '~' : '';
       return dumpValue(v, f, allTypes, options);
     });
   } else {
@@ -501,12 +501,12 @@ function dumpInlineObject(obj, typeDef, allTypes, options) {
   const vals = fields.map(f => {
     if (!Object.prototype.hasOwnProperty.call(obj, f.name)) return '';
     const v = obj[f.name];
-    if (v === null || v === undefined) return '~';
+    if (v === null || v === undefined) return f.defaultValue !== undefined ? '~' : '';
     return dumpValue(v, f, allTypes, options);
   });
 
   let last = vals.length - 1;
-  while (last >= 0 && vals[last] === '') last--;
+  while (last >= 0 && (vals[last] === '' || vals[last] === '~')) last--;
 
   return `(${vals.slice(0, last + 1).join('|')})`;
 }

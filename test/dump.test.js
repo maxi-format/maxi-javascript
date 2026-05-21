@@ -413,3 +413,80 @@ test('dumpMaxi: enum<int> alias — int input emits alias on wire', () => {
 
   assert.ok(maxi.includes('D(1|R)'), `expected alias 'R' for 1000, got:\n${maxi}`);
 });
+
+test('dumpMaxi: null field with default emits ~ (explicit null)', () => {
+  const data = [
+    { id: 1, name: 'Alice' },
+    { id: 2, name: 'Bob', email: null },
+  ];
+
+  const maxi = dumpMaxi(data, {
+    defaultAlias: 'U',
+    types: userTypes,
+    includeTypes: false,
+  });
+
+  const lines = maxi.trim().split('\n');
+  assert.equal(lines[0], 'U(1|Alice)',  'absent trailing field should be stripped');
+  assert.equal(lines[1], 'U(2|Bob|~)', 'null on field-with-default must emit ~');
+});
+
+test('dumpMaxi: null field without default is omitted like an absent field', () => {
+  const types = [{
+    alias: 'U',
+    fields: [
+      { name: 'id', typeExpr: 'int' },
+      { name: 'name' },
+      { name: 'note' },
+    ],
+  }];
+
+  const maxi = dumpMaxi(
+    [{ id: 1, name: 'Alice', note: null }],
+    { defaultAlias: 'U', types, includeTypes: false },
+  );
+
+  assert.equal(maxi.trim(), 'U(1|Alice)', 'trailing null-without-default should be stripped');
+});
+
+test('dumpMaxi: trailing ~ is preserved (not stripped)', () => {
+  const types = [{
+    alias: 'U',
+    fields: [
+      { name: 'id', typeExpr: 'int' },
+      { name: 'email', defaultValue: 'unknown' },
+    ],
+  }];
+
+  const maxi = dumpMaxi(
+    [{ id: 1, email: null }],
+    { defaultAlias: 'U', types, includeTypes: false },
+  );
+
+  assert.equal(maxi.trim(), 'U(1|~)', 'trailing ~ must be preserved');
+});
+
+test('dumpMaxi: multiple trailing absent/null-without-default fields all stripped', () => {
+  const types = [{
+    alias: 'U',
+    fields: [
+      { name: 'id',    typeExpr: 'int' },
+      { name: 'name' },
+      { name: 'note'  },
+      { name: 'extra' },
+      { name: 'tag'   },
+    ],
+  }];
+
+  const maxi = dumpMaxi(
+    [
+      { id: 1, name: 'Alice' },
+      { id: 2, name: 'Bob', note: null, extra: null, tag: null },
+    ],
+    { defaultAlias: 'U', types, includeTypes: false },
+  );
+
+  const lines = maxi.trim().split('\n');
+  assert.equal(lines[0], 'U(1|Alice)', 'three absent trailing fields should be stripped');
+  assert.equal(lines[1], 'U(2|Bob)',   'three null-without-default trailing fields should be stripped');
+});
